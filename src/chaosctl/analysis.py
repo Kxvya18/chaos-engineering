@@ -68,7 +68,7 @@ def _impact(fault_st: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
 
 
 def severity(cfg: Config, journeys: dict[str, Any], recovered: bool | None, recovery_s: float | None,
-             unexpected: list[str], injected: bool) -> dict[str, Any]:
+             unexpected: list[str], injected: bool, data_loss: float = 0.0) -> dict[str, Any]:
     """Documented, reproducible score (docs/SCORING.md)."""
     if not injected:
         return {"score": None, "label": "n/a", "components": {}}
@@ -82,10 +82,12 @@ def severity(cfg: Config, journeys: dict[str, Any], recovered: bool | None, reco
     timeout = cfg.recovery["timeout_s"]
     rec_pen = 1.0 if not recovered else min(1.0, (recovery_s or 0) / timeout)
     blast = 1.0 if unexpected else 0.0
-    score = round(100 * (0.5 * impact + 0.3 * rec_pen + 0.2 * blast), 1)
+    loss = min(1.0, max(0.0, data_loss))
+    score = round(100 * (0.4 * impact + 0.25 * rec_pen + 0.15 * blast + 0.2 * loss), 1)
     label = "critical" if score >= 70 else "high" if score >= 45 else "medium" if score >= 20 else "low"
     return {"score": score, "label": label, "resilience": round(100 - score, 1),
-            "components": {"impact": round(impact, 3), "recovery_penalty": round(rec_pen, 3), "blast_radius": blast}}
+            "components": {"impact": round(impact, 3), "recovery_penalty": round(rec_pen, 3), "blast_radius": blast,
+                           "data_loss": round(loss, 3)}}
 
 
 def analyze_run(cfg: Config, run_dir: Path) -> dict[str, Any]:
@@ -142,13 +144,30 @@ def analyze_run(cfg: Config, run_dir: Path) -> dict[str, Any]:
     expected = exp["experiment"].get("expected_journeys", [])
     unexpected = sorted(set(impacted) - set(expected))
     target_states = [e for e in events if e["action"] == "target_state"]
-    restarts = {}
+    restarts: dict[str, list[Any]] = {}
+    timeline = []
     for e in target_states:
-        for t, st in (e.get("states") or {}).items():
-            restarts.setdefault(t, []).append(st.get("restart_count"))
-    self_healed = {t: (len({r for r in rc if r is not None}) > 1) for t, rc in restarts.items()}
+        for tg, st in (e.get("states") or {}).items():
+            restarts.setdefault(tg, []).append(st.get("restart_count"))
+            rel = round(e["ts"] - b["inject"], 1) if b["inject"] else None
+            row = {"t_s": rel, "target": tg, **{k: st.get(k) for k in ("status", "health", "restart_count", "exit_code",
+                                                                       "oom_killed")}}
+            if not timeline or {k: v for k, v in timeline[-1].items() if k != "t_s"} != \
+                    {k: v for k, v in row.items() if k != "t_s"}:
+                timeline.append(row)  # keep state changes only
+    self_healed = {tg: (len({r for r in rc if r is not None}) > 1) for tg, rc in restarts.items()}
+    checks = [{k: v for k, v in e.items() if k not in ("ts", "time", "source", "action")}
+              for e in events if e["action"] == "check_result"]
+    data_loss = max((c["lost"] / c["seeded"] for c in checks if c.get("seeded")), default=0.0)
 
-    sev = severity(cfg, journeys, recovered, recovery_s, unexpected, injected)
+    ttr = None
+    if injected and tti is not None:
+        rt = metrics.recovery_time(samples, b["inject"] + tti, baseline, cfg.journeys, cfg.recovery, end)
+        ttr = round(tti + rt, 2) if rt is not None else None
+    elif injected:
+        ttr = 0.0
+
+    sev = severity(cfg, journeys, recovered, recovery_s, unexpected, injected, data_loss)
     result = {
         "run_id": exp["run_id"],
         "experiment_id": exp["experiment"]["id"],
@@ -163,7 +182,10 @@ def analyze_run(cfg: Config, run_dir: Path) -> dict[str, Any]:
         "expected_journeys": expected,
         "impacted_journeys": impacted,
         "unexpected_impacted_journeys": unexpected,
+        "time_to_restore_s": ttr,
         "self_healed": self_healed,
+        "target_timeline": timeline,
+        "checks": checks,
         "journeys": journeys,
         "phases": {k: (v["overall"] if v else None) for k, v in phases.items()},
         "severity": sev,
@@ -198,6 +220,9 @@ def render_run_findings(cfg: Config, a: dict[str, Any]) -> str:
              f"- Hypothesis (pre-registered): {a['hypothesis'] or 'n/a'}",
              f"- Time to impact: {_fmt(a['time_to_impact_s'], ' s')} · Recovered: {a['recovered']} · "
              f"Recovery time: {_fmt(a['recovery_time_s'], ' s')}",
+             f"- Time to restore service (inject → sustained healthy): {_fmt(a['time_to_restore_s'], ' s')} · "
+             f"Self-healed: {a['self_healed'] or 'n/a'}",
+             *[f"- Check `{c['check']}`: {c['intact']}/{c['seeded']} intact, **{c['lost']} lost**" for c in a["checks"]],
              f"- Impacted journeys: {', '.join(a['impacted_journeys']) or 'none'} · "
              f"Unexpected: {', '.join(a['unexpected_impacted_journeys']) or 'none'}",
              f"- Severity: **{a['severity']['label']}** (score {_fmt(a['severity']['score'])}) — method: docs/SCORING.md",

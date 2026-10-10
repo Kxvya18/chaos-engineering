@@ -1,0 +1,12 @@
+{
+  "id": "S1-cart-store-crash",
+  "title": "Cart datastore crash (valkey-cart process killed)",
+  "faults": [
+    {"fault_type": "container-stop", "target": "valkey-cart", "params": {"mode": "crash"}, "duration_s": 60}
+  ],
+  "expected_journeys": ["cart", "checkout"],
+  "checks": ["cart_durability"],
+  "hypothesis": "If the valkey-cart process crashes, only the cart and checkout journeys degrade; Docker's restart policy restores valkey-cart within seconds without human action; all other journeys stay within baseline; carts created before the crash are still intact afterwards.",
+  "why": "valkey-cart is the only store of shopping-cart state and sits on the two highest-value journeys (checkout weight 1.0, cart 0.8). It runs with a 20 MB memory limit, so an OOM-kill is a realistic crash, and the static map shows it has no data volume.",
+  "fix": "fixes/cart-store-crash.compose.yaml"
+}

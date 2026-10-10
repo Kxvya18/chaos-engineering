@@ -55,6 +55,10 @@ class Config:
             }
         except KeyError as exc:
             raise ConfigError(f"missing config key: {exc}") from exc
+        for key, env in (("base_url", "CHAOS_BASE_URL"), ("locust_url", "CHAOS_LOCUST_URL"),
+                         ("jaeger_api", "CHAOS_JAEGER_API")):
+            if os.environ.get(env):  # used when chaosctl runs as a container on the demo network
+                self.sandbox[key] = os.environ[env]
         overlap = set(self.allowlist) & set(self.protected)
         if overlap:
             raise ConfigError(f"targets both allowed and protected: {sorted(overlap)}")

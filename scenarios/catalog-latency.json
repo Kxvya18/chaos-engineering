@@ -1,0 +1,11 @@
+{
+  "id": "S2-catalog-latency",
+  "title": "Slow product catalog (400 ms network latency on product-catalog)",
+  "faults": [
+    {"fault_type": "network-delay", "target": "product-catalog", "params": {"delay_ms": 400, "jitter_ms": 50}, "duration_s": 60}
+  ],
+  "expected_journeys": ["browse", "product", "recommendations", "cart", "checkout"],
+  "checks": [],
+  "hypothesis": "400 ms extra latency on product-catalog slows every journey that reads the catalog by roughly the added latency per call, without errors; home and ads are unaffected; latency returns to baseline within 30 s of rollback.",
+  "why": "product-catalog has the highest fan-in of any application service (frontend, recommendation and checkout call it) and backs 5 of 7 journeys; latency amplification through repeated calls is a classic cascading-failure path."
+}

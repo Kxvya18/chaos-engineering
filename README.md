@@ -42,21 +42,20 @@ chaosctl setup               # builds the tiny netem helper image (alpine + ipro
 chaosctl doctor              # sandbox identity, containers, endpoints, kill switch, AI availability
 ```
 
-## 3. Day-1 path: map → baseline → safe failure → automatic abort → kill switch
+## 3. Milestone 1, end to end, in the slide's order
+Follow **[`docs/MILESTONE1.md`](docs/MILESTONE1.md)**: each step lists its command, the expected result and the evidence file.
+In short:
 ```bash
-chaosctl map                          # artifacts/dependency-map.json + docs/DEPENDENCIES.md
-chaosctl baseline --duration 300      # 5 min steady state under the demo's Locust load
-chaosctl run --tripwire               # deliberate blast-radius breach: watchdog MUST abort + roll back
-chaosctl plan --no-ai                 # rule-based ranked plan (artifacts/experiment-plan.json)
-chaosctl run --experiment 1           # first ranked experiment
+chaosctl doctor                                   # 1 setup: app running end to end
+chaosctl map                                      # 2 mapping
+chaosctl baseline --duration 300                  # 3 monitoring baseline
+chaosctl run --scenario cart-store-crash          # 4 first failure (+ evidence + AI incident analysis)
+chaosctl run --tripwire                           # 5a automatic stop on threshold breach
+chaosctl kill ; chaosctl status ; chaosctl kill --reset   # 5b kill switch (run during a run, in a 2nd terminal)
+chaosctl dashboard                                # 6 checkpoint demo at http://127.0.0.1:8090
 ```
-**Kill-switch test.** While a run is active, in a second terminal:
-```bash
-chaosctl kill            # rolls back every fault, blocks new runs
-chaosctl status          # confirm: no active faults
-chaosctl kill --reset    # re-enable runs
-```
-Ctrl-C in the `run` terminal triggers the same rollback.
+Extra: `scripts/demo.sh fix cart-store-crash` → re-run step 4 → `chaosctl compare runs/<before> runs/<after>` →
+`scripts/demo.sh unfix`. In plain words: [`docs/EXPLAINED.md`](docs/EXPLAINED.md). Video script: [`docs/DEMO.md`](docs/DEMO.md).
 
 ## 4. Day-2 path: AI planning, ≥ 3 failure types, AI findings
 ```bash
@@ -75,9 +74,12 @@ chaosctl report                       # artifacts/findings-report.md: ranked wea
 | `runs/<run_id>/analysis.json`, `findings.md` | Values computed by code: impact, time to impact, recovery, severity |
 | `artifacts/findings-report.md` | Ranked weaknesses + fixes + resilience score (deliverable 4) |
 | `artifacts/safety-checks.md` | Safety-control evidence |
+| `runs/<run_id>/evidence.json` | Jaeger error traces, container log lines, compose facts |
+| `runs/<run_id>/incident.md` / `.json` | Where / how / why, with ranked fixes from the industry pattern catalog |
+| `artifacts/comparison-<scenario>.md` | Before/after the fix |
 
 ## Fault types
-`container-stop` (stop/kill), `container-pause` (hung dependency), `network-delay` (tc netem: latency/jitter/loss),
+`container-stop` (stop / kill / crash), `container-pause` (hung dependency), `network-delay` (tc netem: latency/jitter/loss),
 `cpu-throttle` (overloaded service/DB), `traffic-spike` (Locust users). Bounds are in `config/sandbox.toml`
 and `docs/SAFETY.md`.
 

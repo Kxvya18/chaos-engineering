@@ -40,9 +40,28 @@ def _wait(ctx: Ctx, cond: Callable[[], bool], timeout: float, step: float = 0.5)
 
 
 # --- container-stop ----------------------------------------------------------
+def _main_pid(ctx: Ctx, target: str) -> int:
+    info = ctx.docker.inspect(target) or {}
+    st = info.get("State") or {}
+    pid = int(st.get("Pid") or 0)
+    if st.get("Status") != "running" or pid <= 1:
+        raise FaultError(f"{target} is not running (status={st.get('Status')}, pid={pid})")
+    return pid
+
+
 def stop_inject(ctx: Ctx, e: dict[str, Any]) -> dict[str, Any]:
+    """mode=stop: graceful `docker stop` (stays down until rollback; Docker treats it as manual).
+    mode=kill: `docker kill` (SIGKILL; Docker also treats this as manual -> restart policy NOT applied).
+    mode=crash: SIGKILL the container's main process from the VM pid namespace, like an OOM-kill or
+                segfault. Docker sees an unexpected exit, so the service's restart policy IS exercised."""
     before = ctx.docker.state(e["target"])
-    if e["params"].get("mode", "stop") == "kill":
+    mode = e["params"].get("mode", "stop")
+    if mode == "crash":
+        pid = _main_pid(ctx, e["target"])
+        ctx.docker.run(["run", "--rm", "--pid=host", "--label", "chaosctl=crash",
+                        ctx.cfg.sandbox["netem_image"], "kill", "-9", str(pid)])
+        return {"before": before, "killed_pid": pid}
+    if mode == "kill":
         ctx.docker.run(["kill", e["target"]])
     else:
         ctx.docker.run(["stop", "-t", "5", e["target"]])

@@ -16,12 +16,14 @@ lat_j     = clamp((ratio_j − 1) / 4, 0, 1)          # 5× p95 slowdown counts 
 impact    = max_j  w_j · min(1, max(Δerr_j, lat_j))
 recovery  = 1 if not recovered else min(1, recovery_s / recovery.timeout_s)
 blast     = 1 if any unexpected journey impacted else 0
-severity  = 100 · (0.5·impact + 0.3·recovery + 0.2·blast)
+data_loss = lost / seeded from business checks (e.g. cart_durability), else 0
+severity  = 100 · (0.4·impact + 0.25·recovery + 0.15·blast + 0.2·data_loss)
 ```
 Labels: ≥ 70 critical · ≥ 45 high · ≥ 20 medium · else low.
 
-**Rationale.** Customer impact dominates (50 %). Slow or failed recovery is the next-biggest operational risk (30 %).
-Impact that escapes the expected blast radius points to hidden coupling (20 %). Using `max` over journeys
+**Rationale.** Customer impact dominates (40 %). Slow or failed recovery is the next-biggest operational risk (25 %).
+Losing customer state is a correctness failure that health checks don't show (20 %). Impact that escapes the
+expected blast radius points to hidden coupling (15 %). Using `max` over journeys
 means the worst-hit business journey decides the impact, so severity is not diluted by journeys that were unaffected.
 
 ## Resilience score (0–100, higher = better) — `report.resilience_score()`

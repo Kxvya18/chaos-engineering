@@ -24,10 +24,14 @@ class FakeDocker:
         self.lock = threading.Lock()
         names = set(cfg.allowlist) | set(cfg.protected)
         self.containers: dict[str, dict[str, Any]] = {
-            n: {"status": "running", "nano_cpus": 0, "restart_count": 0,
+            n: {"status": "running", "nano_cpus": 0, "restart_count": 0, "pid": 100 + i,
                 "project": cfg.sandbox["compose_project"], "networks": [cfg.sandbox["docker_network"]]}
-            for n in names}
+            for i, n in enumerate(sorted(names))}
         self.netem: dict[str, str] = {}
+        self.persistent: dict[str, bool] = {}  # datastore -> survives a crash (AOF enabled)
+        self.carts: dict[str, dict[str, int]] = {}  # the valkey-cart dataset
+        self.restart_delay_s = 1.0
+        self.crash_times: dict[str, float] = {}
         self.helpers: dict[str, str] = {}  # helper name -> target
         self.fail_on: set[str] = set()
         self.calls: list[list[str]] = []
@@ -76,6 +80,19 @@ class FakeDocker:
             c = self.containers[a[-1]]
             c["nano_cpus"] = int(float(a[a.index("--cpus") + 1]) * 1e9)
             return ok
+        if cmd == "run" and "--pid=host" in a:
+            pid = int(a[-1])
+            name = next((n for n, c in self.containers.items() if c.get("pid") == pid), None)
+            if name is None:
+                return Result(1, "", f"kill: ({pid}) - No such process")
+            self._crash(name)
+            return ok
+        if cmd == "logs":
+            name = a[-1]
+            if name in self.crash_times:
+                return Result(0, "", "Error: It was not possible to connect to the redis server(s). UnableToConnect\n"
+                                     "RedisConnectionException: No connection is active/available to service this operation\n")
+            return ok
         if cmd == "run":
             net = a[a.index("--network") + 1].removeprefix("container:")
             if self.containers.get(net, {}).get("status") != "running":
@@ -107,11 +124,28 @@ class FakeDocker:
             return Result(0, "8\n", "")
         return Result(1, "", f"unsupported fake command {a}")
 
+    def _crash(self, name: str) -> None:
+        """Unexpected exit (SIGKILL): Docker's unless-stopped policy restarts it after a short delay."""
+        c = self.containers[name]
+        c.update(status="exited", exit_code=137)
+        self.crash_times[name] = time.time()
+        if name == "valkey-cart" and not self.persistent.get(name):
+            self.carts.clear()  # in-memory only: the dataset is gone
+
+        def restart():
+            time.sleep(self.restart_delay_s)
+            with self.lock:
+                if c["status"] == "exited":
+                    c.update(status="running", exit_code=0, restart_count=c["restart_count"] + 1,
+                             pid=c["pid"] + 1000)
+        threading.Thread(target=restart, daemon=True).start()
+
     def inspect(self, name: str) -> dict[str, Any] | None:
         c = self.containers.get(name)
         if not c:
             return None
-        return {"State": {"Status": c["status"]}, "RestartCount": c["restart_count"],
+        return {"State": {"Status": c["status"], "Pid": c["pid"] if c["status"] == "running" else 0,
+                          "ExitCode": c.get("exit_code", 0)}, "RestartCount": c["restart_count"],
                 "HostConfig": {"NanoCpus": c["nano_cpus"]},
                 "Config": {"Labels": {"com.docker.compose.project": c["project"]}},
                 "NetworkSettings": {"Networks": {n: {} for n in c["networks"]}}}
@@ -120,7 +154,9 @@ class FakeDocker:
         c = self.containers.get(name)
         if not c:
             return {"exists": False, "status": None, "health": None, "restart_count": None}
-        return {"exists": True, "status": c["status"], "health": None, "restart_count": c["restart_count"]}
+        return {"exists": True, "status": c["status"], "health": None, "restart_count": c["restart_count"],
+                "exit_code": c.get("exit_code", 0), "oom_killed": False, "started_at": None,
+                "pid": c["pid"] if c["status"] == "running" else 0}
 
     def context_endpoint(self) -> str:
         return self.endpoint
@@ -133,15 +169,45 @@ class FakeDocker:
 
 
 class FakeHttp:
-    """Fake Locust API."""
+    """Fake Locust API, cart API (backed by FakeDocker.carts) and Jaeger traces API."""
 
-    def __init__(self):
+    def __init__(self, docker: FakeDocker | None = None):
         self.users = 5
         self.state = "running"
+        self.docker = docker
+
+    def _store_up(self) -> bool:
+        return bool(self.docker) and self.docker.containers["valkey-cart"]["status"] == "running"
+
+    def request(self, method: str, url: str, body: bytes | None = None, headers: dict[str, str] | None = None,
+                timeout: float | None = None) -> tuple[int, bytes, float]:
+        if "/api/cart" not in url or not self.docker:
+            return 404, b"", 1.0
+        if not self._store_up():
+            return 500, b'{"error":"cart store unavailable"}', 5.0
+        if method == "POST":
+            d = json.loads(body or b"{}")
+            cart = self.docker.carts.setdefault(d["userId"], {})
+            cart[d["item"]["productId"]] = cart.get(d["item"]["productId"], 0) + d["item"]["quantity"]
+            return 200, b"{}", 2.0
+        user = url.split("sessionId=")[1].split("&")[0]
+        items = [{"productId": k, "quantity": v} for k, v in self.docker.carts.get(user, {}).items()]
+        return 200, json.dumps({"userId": user, "items": items}).encode(), 2.0
 
     def get_json(self, url: str, params: dict[str, Any] | None = None) -> Any:
         if url.endswith("/stats/requests"):
             return {"state": self.state, "user_count": self.users}
+        if url.endswith("/traces"):
+            if not self.docker or "valkey-cart" not in self.docker.crash_times or params.get("service") != "cart":
+                return {"data": []}
+            tr = {"traceID": "t1", "processes": {"p1": {"serviceName": "frontend"}, "p2": {"serviceName": "cart"}},
+                  "spans": [{"spanID": "a", "processID": "p1", "operationName": "POST /api/cart",
+                             "tags": [{"key": "error", "value": True}], "references": []},
+                            {"spanID": "b", "processID": "p2", "operationName": "oteldemo.CartService/AddItem",
+                             "tags": [{"key": "error", "value": True},
+                                      {"key": "otel.status_description", "value": "Can't access cart storage."}],
+                             "references": [{"refType": "CHILD_OF", "spanID": "a"}]}]}
+            return {"data": [tr]}
         raise HttpError(f"fake: no route {url}")
 
     def post_form(self, url: str, form: dict[str, Any]) -> Any:

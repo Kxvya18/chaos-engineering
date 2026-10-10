@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import analysis, faults, metrics, safety
+from . import analysis, checks, evidence, faults, incident, metrics, safety
 from .config import Config
 from .probes import JourneyFn, ProbeRunner
 from .registry import Registry
@@ -34,7 +34,8 @@ class Orchestrator:
     def __init__(self, cfg: Config, ctx: faults.Ctx, journeys: dict[str, JourneyFn], baseline: dict[str, Any],
                  watchdog_starter: Callable[[Path], Any] | None = None,
                  clock: Callable[[], float] = now, sleep: Callable[[float], None] = time.sleep,
-                 cfg_path: Path | None = None):
+                 cfg_path: Path | None = None, progress: Callable[[str], None] | None = None,
+                 use_ai: bool = True):
         self.cfg = cfg
         self.ctx = ctx
         self.journeys = journeys
@@ -45,6 +46,9 @@ class Orchestrator:
         self.cfg_path = cfg_path or Path(os.environ.get("CHAOS_CONFIG", "config/sandbox.toml")).resolve()
         self.watchdog_starter = watchdog_starter or (lambda rd: spawn_watchdog_process(self.cfg_path, rd))
         self._interrupted = threading.Event()
+        self.progress = progress or (lambda msg: None)
+        self.use_ai = use_ai
+        self._last_progress = 0.0
 
     # -- helpers --------------------------------------------------------------
     def _stop_reason(self, run_dir: Path) -> str | None:
@@ -66,6 +70,24 @@ class Orchestrator:
                 on_tick()
             self.sleep(min(1.0, max(0.0, end - self.clock())))
         return self._stop_reason(run_dir)
+
+    def _status_line(self, run_dir: Path, phase: str, t0: float, targets: list[str], events: EventLog | None) -> None:
+        """Live view: per-journey success over the last 6 s + target container state (every ~2 s)."""
+        t = self.clock()
+        if t - self._last_progress < 2:
+            return
+        self._last_progress = t
+        recent = metrics.between(read_jsonl(run_dir / "metrics.jsonl"), t - 6, t + 1)
+        parts = []
+        for j, ss in sorted(metrics.by_journey(recent).items()):
+            ok = sum(1 for s in ss if s["ok"])
+            parts.append(f"{j}:{'OK ' if ok == len(ss) else 'ERR' if ok == 0 else 'DEG'}{ok}/{len(ss)}")
+        states = {tg: self.ctx.docker.state(tg) for tg in targets}
+        if events is not None and states:
+            events.emit("target_state", states=states)
+        st = " ".join(f"{tg}={s['status']}{'/' + s['health'] if s.get('health') else ''}(restarts={s['restart_count']})"
+                      for tg, s in states.items())
+        self.progress(f"[{phase:9} +{t - t0:5.1f}s] {' '.join(parts)} | {st}")
 
     def _heartbeat(self, run_dir: Path, stop: threading.Event) -> None:
         while not stop.is_set():
@@ -112,7 +134,9 @@ class Orchestrator:
             watchdog = self.watchdog_starter(run_dir)
             events.emit("pre_start", seconds=cfg.steady_state["pre_s"])
             t_pre = self.clock()
-            reason = self._wait(run_dir, cfg.steady_state["pre_s"])
+            targets = [f["target"] for f in experiment["faults"] if f["fault_type"] != "traffic-spike"]
+            reason = self._wait(run_dir, cfg.steady_state["pre_s"],
+                                lambda: self._status_line(run_dir, "steady", t_pre, targets, None))
             if reason:
                 raise RunAborted(reason)
             pre = metrics.between(read_jsonl(run_dir / "metrics.jsonl"), t_pre, self.clock())
@@ -122,6 +146,10 @@ class Orchestrator:
                 outcome = {"status": "steady_state_not_met", **detail}
                 return run_dir
 
+            if "cart_durability" in experiment.get("checks", []):
+                seeds = checks.cart_seed(cfg, self.ctx.http)
+                events.emit("check_seed", check="cart_durability", seeds=seeds)
+                self.progress(f"seeded {sum(s['seeded'] for s in seeds)}/{len(seeds)} sentinel carts before the fault")
             duration = max(f["duration_s"] for f in experiment["faults"])
             for i, f in enumerate(experiment["faults"]):
                 t = self.clock()
@@ -136,20 +164,14 @@ class Orchestrator:
                     self.registry.update(entry["fault_id"], state=entry["state"])
                     injected.append(entry)
                     events.emit("inject_ok", fault_id=entry["fault_id"], state=entry["state"])
+                    self.progress(f">>> INJECTED {f['fault_type']} on {f['target']} {f.get('params') or ''}")
                 except Exception as exc:
                     events.emit("inject_failed", fault_id=entry["fault_id"], error=str(exc))
                     injected.append(entry)
                     raise RunAborted(f"inject_failed: {exc}") from exc
 
-            targets = [f["target"] for f in experiment["faults"] if f["fault_type"] != "traffic-spike"]
-            last_state = [0.0]
-
-            def observe_targets() -> None:
-                if self.clock() - last_state[0] >= 5:
-                    last_state[0] = self.clock()
-                    events.emit("target_state", states={t: self.ctx.docker.state(t) for t in targets})
-
-            reason = self._wait(run_dir, duration, observe_targets)
+            t_inj = self.clock()
+            reason = self._wait(run_dir, duration, lambda: self._status_line(run_dir, "FAULT", t_inj, targets, events))
             outcome = {"status": "completed" if reason is None else reason}
         except RunAborted as exc:
             outcome = {"status": str(exc)}
@@ -170,7 +192,15 @@ class Orchestrator:
             rollback_ts = self.clock()
             events.emit("rollback_complete", remaining=len(self.registry.list(run_id)))
             if injected:
-                self._observe_recovery(run_dir, rollback_ts, events)
+                self.progress(f"<<< ROLLED BACK ({outcome.get('status')}); watching recovery")
+                self._observe_recovery(run_dir, rollback_ts, events,
+                                       [f["target"] for f in experiment["faults"] if f["fault_type"] != "traffic-spike"])
+                seed_ev = next((e for e in read_jsonl(run_dir / "events.jsonl") if e["action"] == "check_seed"), None)
+                if seed_ev:
+                    res = checks.cart_verify(cfg, self.ctx.http, seed_ev["seeds"])
+                    events.emit("check_result", **res)
+                    self.progress(f"cart durability: {res['intact']}/{res['seeded']} sentinel carts intact, "
+                                  f"{res['lost']} lost")
             (run_dir / "DONE").write_text(f"{self.clock()}")
             probes.stop()
             writer.close()
@@ -189,15 +219,21 @@ class Orchestrator:
             write_json(run_dir / "outcome.json", outcome)
             try:
                 analysis.analyze_run(cfg, run_dir)
-            except Exception as exc:  # never mask the run outcome; re-run `chaosctl analyze` later
+                if injected:
+                    self.progress("collecting evidence (Jaeger traces, container logs, compose facts) ...")
+                    evidence.collect(cfg, self.ctx, run_dir)
+                    self.progress("AI incident analysis (falls back to rules if AI is unavailable) ...")
+                    incident.explain(cfg, run_dir, use_ai=self.use_ai)
+            except Exception as exc:  # never mask the run outcome; re-run `chaosctl analyze/explain` later
                 (run_dir / "analysis_error.txt").write_text(f"{type(exc).__name__}: {exc}\n")
         return run_dir
 
-    def _observe_recovery(self, run_dir: Path, rollback_ts: float, events: EventLog) -> None:
+    def _observe_recovery(self, run_dir: Path, rollback_ts: float, events: EventLog, targets: list[str]) -> None:
         rec = self.cfg.recovery
         deadline = rollback_ts + rec["timeout_s"] + rec["window_s"] * rec["consecutive"]
         events.emit("recovery_watch_start", timeout_s=rec["timeout_s"])
         while self.clock() < deadline and not self._interrupted.is_set():
+            self._status_line(run_dir, "recovery", rollback_ts, targets, events)
             samples = read_jsonl(run_dir / "metrics.jsonl")
             rt = metrics.recovery_time(samples, rollback_ts, self.baseline, self.cfg.journeys, rec, self.clock())
             if rt is not None:

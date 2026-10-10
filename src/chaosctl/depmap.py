@@ -32,6 +32,8 @@ def compose_config(cfg: Config) -> dict[str, Any]:
             args += ["--env-file", env_file]
     for f in cfg.sandbox["compose_files"]:
         args += ["-f", f]
+    if (demo / "compose.chaos-fix.yaml").exists():  # an applied fix (scripts/demo.sh fix <name>)
+        args += ["-f", "compose.chaos-fix.yaml"]
     args += ["config", "--format", "json"]
     p = subprocess.run(args, cwd=demo, capture_output=True, text=True, timeout=120)
     if p.returncode != 0:
@@ -58,7 +60,9 @@ def static_edges(compose: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], li
         nodes[name] = {"name": name, "image": image, "kind": kind,
                        "healthcheck": bool(svc.get("healthcheck")) and not (svc.get("healthcheck") or {}).get("disable"),
                        "restart": svc.get("restart"),
-                       "memory_limit": ((svc.get("deploy") or {}).get("resources") or {}).get("limits", {}).get("memory")}
+                       "memory_limit": ((svc.get("deploy") or {}).get("resources") or {}).get("limits", {}).get("memory"),
+                       "volumes": [v.get("target") if isinstance(v, dict) else str(v) for v in svc.get("volumes") or []],
+                       "command": svc.get("command")}
         deps = svc.get("depends_on") or {}
         deps = deps if isinstance(deps, dict) else {d: {} for d in deps}
         for key, val in _env_items(svc.get("environment")):

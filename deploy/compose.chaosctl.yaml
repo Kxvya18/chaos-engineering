@@ -1,0 +1,27 @@
+# Deployed mode: chaosctl dashboard + on-demand runs as a container next to the demo.
+#   docker compose -f deploy/compose.chaosctl.yaml up -d --build           # dashboard on http://127.0.0.1:8090
+#   docker compose -f deploy/compose.chaosctl.yaml run --rm chaosctl run --scenario cart-store-crash
+name: chaosctl
+services:
+  chaosctl:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: chaosctl:local
+    ports:
+      - "127.0.0.1:8090:8090"   # never exposed beyond the Mac
+    environment:
+      CHAOS_BASE_URL: http://frontend-proxy:8080
+      CHAOS_LOCUST_URL: http://frontend-proxy:8080/loadgen
+      CHAOS_JAEGER_API: http://frontend-proxy:8080/jaeger/ui/api
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../runs:/app/runs
+      - ../artifacts:/app/artifacts
+      - ../state:/app/state
+    networks: [demo]
+networks:
+  demo:
+    name: opentelemetry-demo
+    external: true
