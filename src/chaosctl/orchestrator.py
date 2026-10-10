@@ -35,7 +35,7 @@ class Orchestrator:
                  watchdog_starter: Callable[[Path], Any] | None = None,
                  clock: Callable[[], float] = now, sleep: Callable[[float], None] = time.sleep,
                  cfg_path: Path | None = None, progress: Callable[[str], None] | None = None,
-                 use_ai: bool = True):
+                 use_ai: bool = False, explain: bool = False):
         self.cfg = cfg
         self.ctx = ctx
         self.journeys = journeys
@@ -48,6 +48,7 @@ class Orchestrator:
         self._interrupted = threading.Event()
         self.progress = progress or (lambda msg: None)
         self.use_ai = use_ai
+        self.explain = explain  # Day-2 feature: incident analysis after the run (opt-in)
         self._last_progress = 0.0
 
     # -- helpers --------------------------------------------------------------
@@ -222,8 +223,9 @@ class Orchestrator:
                 if injected:
                     self.progress("collecting evidence (Jaeger traces, container logs, compose facts) ...")
                     evidence.collect(cfg, self.ctx, run_dir)
-                    self.progress("AI incident analysis (falls back to rules if AI is unavailable) ...")
-                    incident.explain(cfg, run_dir, use_ai=self.use_ai)
+                    if self.explain:
+                        self.progress("incident analysis (AI if enabled, else rule-based) ...")
+                        incident.explain(cfg, run_dir, use_ai=self.use_ai)
             except Exception as exc:  # never mask the run outcome; re-run `chaosctl analyze/explain` later
                 (run_dir / "analysis_error.txt").write_text(f"{type(exc).__name__}: {exc}\n")
         return run_dir

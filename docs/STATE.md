@@ -14,6 +14,10 @@ _Last updated: 2026-10-10 — S1 deep-dive (crash → evidence → AI incident �
   dashboard with kill switch, container deployment, docs MILESTONE1/EXPLAINED/DEMO.
 - Correction: every demo service already has `restart: unless-stopped` (an earlier claim that valkey-cart lacked it was wrong).
 
+- Day-1 scope corrected (owner): Milestone 1 needs no AI. Incident analysis is now opt-in (`run --explain` /
+  `chaosctl explain`). Baseline captures container health plus a quality gate. The map labels data flows.
+  Step 4 runs both slide examples (S1 crash, S2 network delay).
+
 ## Current blocker
 - No live evidence yet: everything below the simulation must run on the team Mac (no Docker daemon in the Claude cloud session).
 - Owner: switch GitHub default branch to `main`; provide `ANTHROPIC_API_KEY` (spend-capped) for runtime AI on Day 2.

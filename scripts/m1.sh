@@ -20,8 +20,10 @@ step2() { banner "2. Application mapping"; need_docker
   chaosctl map && echo "Map: docs/DEPENDENCIES.md"; }
 step3() { banner "3. Monitoring baseline (steady load, ${BASELINE_S:-300} s)"; need_docker
   chaosctl baseline --duration "${BASELINE_S:-300}"; }
-step4() { banner "4. First failure injection: S1 cart datastore crash"; need_docker
-  chaosctl run --scenario cart-store-crash; }
+step4() { banner "4a. Failure 1 (slide example: container crash) - S1 cart datastore crash"; need_docker
+  chaosctl run --scenario cart-store-crash
+  banner "4b. Failure 2 (slide example: network delay) - S2 slow product catalog"
+  chaosctl run --scenario catalog-latency; }
 step5() { banner "5a. Safety: automatic stop on threshold breach (tripwire)"; need_docker
   chaosctl run --tripwire
   banner "5b. Safety: kill switch during a live run"
@@ -36,7 +38,7 @@ step5() { banner "5a. Safety: automatic stop on threshold breach (tripwire)"; ne
 step6() { banner "6. Day-1 checkpoint demo"
   echo "Dashboard: http://127.0.0.1:8090  (Ctrl-C to stop)"
   chaosctl dashboard; }
-stepfix() { banner "Extra: apply the AI's P1 fix, re-run S1, compare"; need_docker
+stepfix() { banner "Optional (Day-2 preview): apply the persistence fix, re-run S1, compare"; need_docker
   # same baseline as the "before" run, so the comparison is fair
   scripts/demo.sh fix cart-store-crash && chaosctl run --scenario cart-store-crash
   BEFORE=$(ls -d runs/*-S1-cart-store-crash 2>/dev/null | tail -2 | head -1)
@@ -49,6 +51,6 @@ run() { local s="$1"; "step$s" 2>&1 | tee "evidence/m1-step$s.log"; }
 case "${1:-}" in
   0|1|2|3|4|5|fix) run "$1" ;;
   6) step6 ;;
-  all) for s in 0 1 2 3 4 5; do run "$s"; done; echo; echo "Now: scripts/m1.sh fix   then   scripts/m1.sh 6" ;;
+  all) for s in 0 1 2 3 4 5; do run "$s"; done; echo; echo "Now: scripts/m1.sh 6 (demo dashboard)" ;;
   *) echo "usage: scripts/m1.sh 0|1|2|3|4|5|6|fix|all"; exit 2 ;;
 esac

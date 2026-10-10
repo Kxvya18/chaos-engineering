@@ -42,22 +42,21 @@ chaosctl setup               # builds the tiny netem helper image (alpine + ipro
 chaosctl doctor              # sandbox identity, containers, endpoints, kill switch, AI availability
 ```
 
-## 3. Milestone 1, end to end, in the slide's order
-Easiest: `scripts/m1.sh 0` … `scripts/m1.sh 6` (step runner; logs go to `evidence/`). Details: **[`docs/MILESTONE1.md`](docs/MILESTONE1.md)**, where each step lists its command, the expected result and the evidence file.
-In short:
-```bash
-chaosctl doctor                                   # 1 setup: app running end to end
-chaosctl map                                      # 2 mapping
-chaosctl baseline --duration 300                  # 3 monitoring baseline
-chaosctl run --scenario cart-store-crash          # 4 first failure (+ evidence + AI incident analysis)
-chaosctl run --tripwire                           # 5a automatic stop on threshold breach
-chaosctl kill ; chaosctl status ; chaosctl kill --reset   # 5b kill switch (run during a run, in a 2nd terminal)
-chaosctl dashboard                                # 6 checkpoint demo at http://127.0.0.1:8090
+## 3. Milestone 1 (Day 1), end to end in the slide's order. No AI needed
 ```
-Extra: `scripts/demo.sh fix cart-store-crash` → re-run step 4 → `chaosctl compare runs/<before> runs/<after>` →
-`scripts/demo.sh unfix`. In plain words: [`docs/EXPLAINED.md`](docs/EXPLAINED.md). Video script: [`docs/DEMO.md`](docs/DEMO.md).
+scripts/m1.sh 0
+scripts/m1.sh 1
+scripts/m1.sh 2
+scripts/m1.sh 3
+scripts/m1.sh 4
+scripts/m1.sh 5
+scripts/m1.sh 6
+```
+1 app running · 2 dependency + data-flow map · 3 baseline (error rate, latency, health, quality gate) ·
+4 two failures: container crash (S1) and network delay (S2) · 5 automatic stop (tripwire) + kill switch · 6 dashboard demo.
+Pass criteria and evidence for every step: **[`docs/MILESTONE1.md`](docs/MILESTONE1.md)**. Plain words: [`docs/EXPLAINED.md`](docs/EXPLAINED.md).
 
-## 4. Day-2 path: AI planning, ≥ 3 failure types, AI findings
+## 4. Day-2 path (later): AI planning, ≥ 3 failure types, AI findings
 ```bash
 export ANTHROPIC_API_KEY=...          # never commit it; optional CHAOS_AI_MODEL (default claude-opus-5-5)
 chaosctl plan                         # AI selects/ranks from validated candidates (falls back to rules)

@@ -127,12 +127,37 @@ def cmd_baseline(cfg: config.Config, args) -> int:
         context["locust"] = faults.locust_status(ctx)
     except HttpError as exc:
         context["locust"] = {"error": str(exc)}
-    run_dir = baseline.run(cfg, Journeys(cfg, ctx.http).all(), args.duration, context)
+    def load() -> dict[str, Any]:
+        try:
+            return faults.locust_status(ctx)
+        except HttpError as exc:
+            return {"error": str(exc)}
+
+    run_dir = baseline.run(cfg, Journeys(cfg, ctx.http).all(), args.duration, context,
+                           health=lambda: project_health(cfg, ctx), load=load)
     s = read_json(run_dir / "summary.json")
-    print(f"baseline -> {run_dir}/summary.json and artifacts/baseline.json")
+    print(f"\nbaseline -> {run_dir}/summary.json and artifacts/baseline.json\n")
+    print(f"  {'journey':16} {'samples':>7} {'error rate':>10} {'p50 ms':>8} {'p95 ms':>8} {'p99 ms':>8} {'req/s':>6}")
     for j, st in s["journeys"].items():
-        print(f"  {j:16} n={st['n']:4} err={st['error_rate']:.3f} p50={st['p50_ms']}ms p95={st['p95_ms']}ms")
-    return 0
+        rps = f"{st['throughput_rps']:.2f}" if st["throughput_rps"] else "n/a"
+        print(f"  {j:16} {st['n']:>7} {st['error_rate']:>10.1%} {st['p50_ms']:>8.0f} {st['p95_ms']:>8.0f} "
+              f"{st['p99_ms']:>8.0f} {rps:>6}")
+    print("\n  baseline quality:")
+    for c in s["quality"]["checks"]:
+        print(f"   [{'PASS' if c['ok'] else 'FAIL'}] {c['check']}: {c['detail']}")
+    print(f"\n  STEADY STATE {'ACCEPTED' if s['quality']['pass'] else 'REJECTED - fix the app/load and re-run baseline'}")
+    return 0 if s["quality"]["pass"] else 1
+
+
+def project_health(cfg: config.Config, ctx: faults.Ctx) -> dict[str, Any]:
+    res = ctx.docker.run(["ps", "-a", "--filter", f"label=com.docker.compose.project={cfg.sandbox['compose_project']}",
+                          "--format", "{{.Names}}\t{{.State}}\t{{.Status}}"], check=False)
+    out = {}
+    for row in res.stdout.strip().splitlines():
+        parts = row.split("\t")
+        if len(parts) >= 3:
+            out[parts[0]] = {"state": parts[1], "status": parts[2]}
+    return out
 
 
 def _history(cfg: config.Config) -> list[dict[str, Any]]:
@@ -171,6 +196,9 @@ def cmd_run(cfg: config.Config, args) -> int:
         print("refusing: no baseline (run `chaosctl baseline` first)")
         return 2
     base = read_json(base_path)
+    if base.get("quality") and not base["quality"]["pass"] and not args.force:
+        print("refusing: the recorded baseline failed its quality gate (re-run `chaosctl baseline`, or --force)")
+        return 2
     plan_ref = None
     if args.tripwire:
         exp = planner.tripwire(cfg)
@@ -187,7 +215,8 @@ def cmd_run(cfg: config.Config, args) -> int:
         exp = sel[0]
         plan_ref = {"path": str(plan_path), "sha256": plan["meta"]["sha256"], "file_sha256": sha256_file(plan_path)}
     ctx = _ctx(cfg)
-    orch = Orchestrator(cfg, ctx, Journeys(cfg, ctx.http).all(), base, progress=print, use_ai=not args.no_ai)
+    orch = Orchestrator(cfg, ctx, Journeys(cfg, ctx.http).all(), base, progress=print,
+                        use_ai=args.explain and not args.no_ai, explain=args.explain)
     print(f"running {exp['id']} (Ctrl-C or `chaosctl kill` aborts and rolls back) ...")
     try:
         run_dir = orch.run(exp, plan_ref)
@@ -213,6 +242,8 @@ def cmd_run(cfg: config.Config, args) -> int:
         print(f"  root cause: {r['why']['root_cause']}")
         for fx in sorted(r["fixes"], key=lambda f: f["priority"]):
             print(f"  {fx['priority']} {fx['pattern_name']}: {fx['change']}")
+    if not (run_dir / "incident.json").exists():
+        print("\n(incident analysis is a Day-2 feature: `chaosctl explain " + str(run_dir) + "`)")
     print(f"\nreport: chaosctl dashboard  ->  http://127.0.0.1:8090/runs/{run_dir.name}/")
     return 0
 
@@ -319,7 +350,10 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--tripwire", action="store_true", help="safety test: must be aborted by the watchdog")
     g.add_argument("--scenario", help="pre-registered scenario name from scenarios/ (e.g. cart-store-crash)")
     r.add_argument("--plan", default="artifacts/experiment-plan.json")
-    r.add_argument("--no-ai", action="store_true", help="rule-based incident analysis only")
+    r.add_argument("--explain", action="store_true",
+                   help="Day-2 preview: incident analysis after the run (AI if ANTHROPIC_API_KEY is set)")
+    r.add_argument("--no-ai", action="store_true", help="with --explain: rule-based analysis only")
+    r.add_argument("--force", action="store_true", help="run even if the baseline failed its quality gate")
     ex = sub.add_parser("explain", help="AI incident analysis of one run (where/how/why + fixes)")
     ex.add_argument("run_dir")
     ex.add_argument("--no-ai", action="store_true")

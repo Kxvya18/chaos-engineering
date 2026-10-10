@@ -28,3 +28,12 @@ def test_dependents_transitive(cfg):
     m = depmap.build_map(cfg, COMPOSE, None)
     assert depmap.dependents(m, "valkey-cart") == {"cart", "frontend"}
     assert "Drift and gaps" in depmap.render_markdown(m)
+
+
+def test_flow_types_label_data_flows(cfg):
+    m = depmap.build_map(cfg, COMPOSE, None)
+    flows = {(e["from"], e["to"]): e["flow"] for e in m["edges"]}
+    assert flows[("cart", "valkey-cart")] == "key-value store"
+    assert flows[("frontend", "otel-collector")] == "telemetry"
+    assert flows[("frontend", "cart")] == "sync request (gRPC/HTTP)"
+    assert "Data flow" in depmap.render_markdown(m)
