@@ -72,6 +72,11 @@ FAULT_NAMES = {"container-stop": "crash / unavailable", "container-pause": "hang
                "network-delay": "slow network", "cpu-throttle": "CPU starvation", "traffic-spike": "traffic surge"}
 
 
+def mode_name(c: dict[str, Any]) -> str:
+    """Failure-mode label: the database error it reproduces (short form) or the generic fault name."""
+    return c["db_error"].split(":")[0] if c.get("db_error") else FAULT_NAMES[c["fault_type"]]
+
+
 def _mem_mib(limit: Any) -> float | None:
     if limit is None:
         return None
@@ -100,7 +105,7 @@ def rule_based_row(cfg: Config, c: dict[str, Any], node: dict[str, Any]) -> dict
            "network-delay": 9, "cpu-throttle": 8, "traffic-spike": 7}[c["fault_type"]]
     if data_loss:
         det = 8  # the restart policy turns health green again; lost data is invisible to health checks
-    return {"candidate_id": c["candidate_id"], "effect": f"{FAULT_NAMES[c['fault_type']]} of {c['target']} degrades "
+    return {"candidate_id": c["candidate_id"], "effect": f"{mode_name(c)} of {c['target']} degrades "
             f"{', '.join(c['expected_journeys']) or 'no journey'}", "affected_journeys": c["expected_journeys"],
             "severity": max(1, min(10, sev)), "occurrence": max(1, min(10, occ)), "detection": det,
             "rationale": f"rule-based: journey weight {w}, memory limit {node.get('memory_limit')}, "
@@ -129,7 +134,7 @@ def validate(data: dict[str, Any], by_id: dict[str, Any]) -> str | None:
 
 
 def build(cfg: Config, dep_map_path: Path, baseline_path: Path, use_ai: bool = True,
-          coverage: bool = False, fault_seconds: int | None = None) -> dict[str, Any]:
+          coverage: bool = False, fault_seconds: int | None = None, suite: str = "priority") -> dict[str, Any]:
     """coverage=True (mission mode): after the planner's own picks, add the highest-RPN failure of every fault type
     not yet chosen, so each failure type is tested in priority order. Additions are labelled 'coverage'."""
     dep_map = read_json(dep_map_path) if dep_map_path.exists() else {}
@@ -189,8 +194,7 @@ def build(cfg: Config, dep_map_path: Path, baseline_path: Path, use_ai: bool = T
     for r in data["rows"]:
         r["rpn"] = r["severity"] * r["occurrence"] * r["detection"]
         c = by_id[r["candidate_id"]]
-        r.update(component=c["target"], fault_type=c["fault_type"], failure_mode=FAULT_NAMES[c["fault_type"]],
-                 measured=None)
+        r.update(component=c["target"], fault_type=c["fault_type"], failure_mode=mode_name(c), measured=None)
     data["rows"].sort(key=lambda r: -r["rpn"])
     source = "ai" if meta["method"].startswith("ai") else "rule-based"
     for sel in data["selected"]:
@@ -207,7 +211,7 @@ def build(cfg: Config, dep_map_path: Path, baseline_path: Path, use_ai: bool = T
                 if c["candidate_id"] not in row_by:
                     r = rule_based_row(cfg, c, nodes.get(c["target"], {}))
                     r.update(rpn=r["severity"] * r["occurrence"] * r["detection"], component=c["target"],
-                             fault_type=ftype, failure_mode=FAULT_NAMES[ftype], measured=None)
+                             fault_type=ftype, failure_mode=mode_name(c), measured=None)
                     data["rows"].append(r)
                     row_by[c["candidate_id"]] = r
             extra.append(max((row_by[c["candidate_id"]] for c in pool), key=lambda r: r["rpn"]))
@@ -219,12 +223,27 @@ def build(cfg: Config, dep_map_path: Path, baseline_path: Path, use_ai: bool = T
                                      "hypothesis": f"{r['effect']}; other journeys stay within baseline; service "
                                                    f"recovers within {cfg.recovery['timeout_s']} s of rollback"})
         data["rows"].sort(key=lambda r: -r["rpn"])
+    if suite == "database":  # every database error on every datastore, highest risk first
+        row_by = {r["candidate_id"]: r for r in data["rows"]}
+        for c in cands:
+            if c["kind"] == "datastore" and c["candidate_id"] not in row_by:
+                r = rule_based_row(cfg, c, nodes.get(c["target"], {}))
+                r.update(rpn=r["severity"] * r["occurrence"] * r["detection"], component=c["target"],
+                         fault_type=c["fault_type"], failure_mode=mode_name(c), measured=None)
+                data["rows"].append(r)
+                row_by[c["candidate_id"]] = r
+        db = sorted((row_by[c["candidate_id"]] for c in cands if c["kind"] == "datastore"), key=lambda r: -r["rpn"])
+        data["selected"] = [{"candidate_id": r["candidate_id"], "rank": i + 1, "source": "database-suite",
+                             "reason": f"database error catalog: {by_id[r['candidate_id']]['db_error']} (RPN {r['rpn']})",
+                             "hypothesis": f"{r['effect']}; other journeys stay within baseline; service recovers "
+                                           f"within {cfg.recovery['timeout_s']} s of rollback"} for i, r in enumerate(db)]
+        data["rows"].sort(key=lambda r: -r["rpn"])
     experiments = []
     for s in sorted(data["selected"], key=lambda s: s["rank"]):
         c = by_id[s["candidate_id"]]
         exp = planner.experiment_from(cfg, c, s)
         exp["candidate_id"] = c["candidate_id"]
-        exp["title"] = f"{FAULT_NAMES[c['fault_type']].capitalize()} of {c['target']} (FMEA rank {s['rank']})"
+        exp["title"] = f"{mode_name(c).capitalize()} of {c['target']} (FMEA rank {s['rank']})"
         exp["why"] = s["reason"]
         exp["source"] = s.get("source")
         if fault_seconds:  # shorter fault windows for a demo; still bounded by the safety limits below
@@ -296,9 +315,10 @@ def render_md(fmea: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run(cfg: Config, use_ai: bool = True, coverage: bool = False, fault_seconds: int | None = None) -> dict[str, Any]:
+def run(cfg: Config, use_ai: bool = True, coverage: bool = False, fault_seconds: int | None = None,
+        suite: str = "priority") -> dict[str, Any]:
     out = build(cfg, cfg.artifacts_dir / "dependency-map.json", cfg.artifacts_dir / "baseline.json", use_ai, coverage,
-                fault_seconds)
+                fault_seconds, suite)
     write_json(cfg.artifacts_dir / "fmea.json", out["fmea"])
     write_json(cfg.artifacts_dir / "experiment-plan.json", out["plan"])
     (cfg.root / "docs").mkdir(exist_ok=True)

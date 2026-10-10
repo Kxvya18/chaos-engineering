@@ -73,9 +73,11 @@ def index_html(cfg: Config) -> str:
     comps = "".join(f"<li><a href='/compare/{esc(p.stem)}'>{esc(p.stem.replace('comparison-', ''))}</a></li>"
                     for p in sorted(cfg.artifacts_dir.glob("comparison-*.json")))
     body = f"""<h1>Results</h1>
-<p class="lead">Every failure the system injected, what customers felt, and the fix. Open a result for the full
-where / how / why analysis and the raw evidence.</p>
-<h2>Failure tests</h2>{cards}
+<p class="lead">Every failure the system injected, what customers felt, what the system did about it, what we recommend
+you do (with evidence), and every decision a human took.</p>
+<h2>Database error map: % of customer requests that failed per database error</h2>{pages.db_map_html(cfg)}
+<h2>Mission report: findings, actions, recommendations, human decisions</h2>{pages.mission_report_html(cfg)}
+<h2>All failure tests</h2>{cards}
 <h2>Safety controls, proven</h2><p class="small muted">The system must stop itself when damage spreads, and one button must undo everything.</p>
 {safety_html}
 {'<h2>Before / after a fix</h2><ul>' + comps + '</ul>' if comps else ''}"""
@@ -140,7 +142,9 @@ onsubmit="return confirm('Start the mission? Failures will be injected into the 
 <option value="auto">pre-approve vetted fixes</option><option value="never">recommend only</option></select></label>
 <label><input type="checkbox" name="reuse" value="1"> reuse the accepted map + baseline</label>
 <label>fault seconds <input name="fault_seconds" value="30" size="3"></label>
-<label>tests <input name="max" value="5" size="2"></label></form>
+<label>test set <select name="suite"><option value="priority" selected>priority: one per failure type</option>
+<option value="database">database errors: every failure on every database</option></select></label>
+<label>max tests <input name="max" value="" size="2" placeholder="all"></label></form>
 <p class="small muted" id="mstatus"></p></div><div id="approval"></div>
 <h2>Agents</h2><div class="agents" id="agents"></div>
 <div class="two" style="margin-top:14px"><div><h2>Live blast radius</h2>{LIVE_MAP_JS}</div><div>{live_panel()}</div></div>
@@ -156,8 +160,10 @@ def start_mission(cfg: Config, form: dict[str, str]) -> str:
         return "a mission is already running"
     if safety.kill_engaged(cfg):
         return "kill switch engaged: reset it with `chaosctl kill --reset` first"
-    args = [sys.executable, "-m", "chaosctl", "mission", "--yes",
-            "--max", str(int(form.get("max") or 5)), "--fault-seconds", str(int(form.get("fault_seconds") or 30))]
+    args = [sys.executable, "-m", "chaosctl", "mission", "--yes", "--fault-seconds", str(int(form.get("fault_seconds") or 30)),
+            "--suite", "database" if form.get("suite") == "database" else "priority"]
+    if (form.get("max") or "").strip().isdigit():
+        args += ["--max", str(int(form["max"]))]
     args += ["--approval", form.get("approval") if form.get("approval") in ("ask", "auto", "never") else "ask"]
     if form.get("reuse"):
         args.append("--reuse")

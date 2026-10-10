@@ -117,7 +117,8 @@ def test_mission_all_agents_priority_rollback_and_verified_fix(env, monkeypatch,
 
     # coordination trail and report
     trail = [json.loads(x) for x in (cfg.artifacts_dir / "missions" / m.mission_id / "agents.jsonl").read_text().splitlines()]
-    order = [t["agent"] for t in trail if t["status"] == "working"]
+    order = [t["agent"] for t in trail if t.get("status") == "working"]
+    assert [t["decision"] for t in trail if t["agent"] == "human"] == ["apply"]  # the human decision is on record
     assert order[:3] == ["cartographer", "sentinel", "planner"] and order[-1] == "reporter"
     assert order.count("injector") == order.count("recovery") == len([r for r in final["results"] if r["injected"]])
     assert "## Fixes" in (cfg.artifacts_dir / "missions" / m.mission_id / "report.md").read_text()
@@ -146,3 +147,31 @@ def test_mission_stops_on_kill_switch_and_declined_plan(env, monkeypatch, tmp_pa
     final = agents.Mission(tools, agents.Options(use_ai=False, reuse=True, fault_seconds=3)).run()
     assert final["stop_reason"] == "kill switch engaged" and Registry(env.cfg.state_dir).list() == []
     safety.reset_kill(env.cfg)
+
+
+def test_database_suite_error_map_and_results_report(env, monkeypatch, tmp_path):
+    from chaosctl import dashboard, pages
+    monkeypatch.setenv("CHAOS_AI_DISABLED", "1")
+    tools = make_tools(env, monkeypatch, tmp_path)
+    seen = []
+    click(env.cfg, "apply", seen)
+    final = agents.Mission(tools, agents.Options(use_ai=False, approval="ask", suite="database", max_tests=6,
+                                                 fault_seconds=3, tripwire=False)).run()
+    cfg = env.cfg
+    tests = [r for r in final["results"] if r.get("source") == "database-suite"]
+    # only database errors, on datastores, each labelled, in risk order
+    assert len(tests) == 6 and all(r["target"] in cfg.datastores and r["db_error"] for r in tests)
+    assert [r["priority"] for r in tests] == sorted(r["priority"] for r in tests)
+    # the map has a measured failure % per database error, and per journey
+    rows = pages.db_error_map(cfg)
+    assert rows and all(r["error_pct"] is not None and r["journeys"] for r in rows)
+    crash = next(r for r in rows if r["datastore"] == "valkey-cart" and r["db_error"].startswith("crash"))
+    assert crash["error_pct"] > 0 and crash["journeys"]["cart"]["impacted"]
+    assert crash["data_lost"] == "5/5" and crash["after_fix"]["data_lost"] == "0/5"  # before vs after the approved fix
+    # results report: findings, what the system did, recommendations with evidence, the human decision
+    html = dashboard.index_html(cfg)
+    assert "Database error map" in html and "Human-in-the-loop decisions" in html
+    assert "What we recommend you do" in html and "E" in html and "operator on the dashboard" in html
+    rep = read_json(next((cfg.artifacts_dir / "missions").glob("*/report.json")))
+    assert rep["decisions"] and rep["decisions"][0]["decision"] == "apply"
+    assert any(x["evidence"] for r in rep["results"] for x in r.get("recommendations") or [])
