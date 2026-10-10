@@ -10,14 +10,16 @@ with fixes. Requirements: `docs/REQUIREMENTS.md`. MVP scope: `docs/MVP.md`.
 2. Read `docs/PLAN.md` for the agreed sequence; `docs/SAFETY.md` before touching any fault code.
 3. Update `docs/STATE.md` at the end of every working session.
 
-## Stack (status: NOT YET AGREED — see docs/PLAN.md §Decisions)
-- Sample app: TBD (candidates in docs/PLAN.md).
+## Stack
+- Sample app: OpenTelemetry Demo (Astronomy Shop) — agreed. Host: team Mac M2, Docker Desktop.
 - Deployment: Docker Compose (proposed). Orchestrator language: Python (proposed).
+- The Claude cloud session has no Docker daemon: live runs happen on the Mac; cloud = code, simulated tests, GitHub.
 - Runtime AI: TBD (provider, model, budget). Development AI: Claude Code (separate cost line).
 
 ## Verified commands
-None yet. Do not list a command here until it has been run successfully and the
-evidence is recorded in `docs/STATE.md`.
+- `python3 scripts/check_repo.py` — docs, skill frontmatter, JSON artifacts (also CI job `repo-checks`).
+- `ruff check .` — lint (CI job `python`; config `ruff.toml`).
+App/orchestrator commands: none yet. Add one only after it ran successfully with evidence in `docs/STATE.md`.
 
 ## Milestones
 - Day 1 minimum: running app, dependency map, one safe failure injection with a working kill switch.
