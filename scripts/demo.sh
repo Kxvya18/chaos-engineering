@@ -19,7 +19,9 @@ case "${1:-}" in
     cd "$DEMO_DIR"
     grep -q '^DEMO_VERSION=' .env.override 2>/dev/null || echo "DEMO_VERSION=$DEMO_TAG" >> .env.override
     git -C "$DEMO_DIR" describe --tags --always ;;
-  up)    cd "$DEMO_DIR" && "${COMPOSE[@]}" up --detach --remove-orphans ;;
+  up)    docker info >/dev/null 2>&1 || { echo "Docker is not running: start Docker Desktop, wait for 'Engine running', retry"; exit 1; }
+         cd "$DEMO_DIR" && { "${COMPOSE[@]}" up --detach --remove-orphans --wait --wait-timeout 900 \
+           || echo "WARNING: not every service reported healthy yet - check: scripts/demo.sh ps"; } ;;
   down)  cd "$DEMO_DIR" && "${COMPOSE[@]}" down ;;
   ps)    cd "$DEMO_DIR" && "${COMPOSE[@]}" ps --format 'table {{.Name}}\t{{.State}}\t{{.Status}}' ;;
   stats) docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}' ;;

@@ -36,14 +36,14 @@ open http://localhost:8080/ http://localhost:8080/jaeger/ http://localhost:8080/
 ```bash
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest -q                    # unit + simulated end-to-end tests
+python -m pytest -q          # unit + simulated end-to-end tests (use the venv's python)
 chaosctl selftest            # simulated safety suite -> artifacts/safety-checks.md
 chaosctl setup               # builds the tiny netem helper image (alpine + iproute2)
 chaosctl doctor              # sandbox identity, containers, endpoints, kill switch, AI availability
 ```
 
 ## 3. Milestone 1, end to end, in the slide's order
-Follow **[`docs/MILESTONE1.md`](docs/MILESTONE1.md)**: each step lists its command, the expected result and the evidence file.
+Easiest: `scripts/m1.sh 0` … `scripts/m1.sh 6` (step runner; logs go to `evidence/`). Details: **[`docs/MILESTONE1.md`](docs/MILESTONE1.md)**, where each step lists its command, the expected result and the evidence file.
 In short:
 ```bash
 chaosctl doctor                                   # 1 setup: app running end to end

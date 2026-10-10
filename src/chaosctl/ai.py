@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Any
 
 DEFAULT_MODEL = "claude-opus-5-5"
@@ -24,12 +25,12 @@ def model_name() -> str:
 def available() -> tuple[bool, str]:
     if os.environ.get("CHAOS_AI_DISABLED") == "1":
         return False, "disabled by CHAOS_AI_DISABLED=1"
+    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+        return False, "no ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN in environment"
     try:
         import anthropic  # noqa: F401
     except ImportError:
-        return False, "anthropic SDK not installed"
-    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
-        return False, "no ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN in environment"
+        return False, f"anthropic SDK not installed for {sys.executable} (activate .venv / pip install -e .)"
     return True, "ok"
 
 

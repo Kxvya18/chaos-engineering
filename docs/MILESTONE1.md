@@ -1,7 +1,9 @@
 # Milestone 1 runbook — in the exact order of the Day-1 slide
 
-Run everything from the `chaos-engineering` folder on the team Mac, with the virtualenv active
-(`source .venv/bin/activate`). Paste each step's evidence into `docs/STATE.md`.
+Run everything from the `chaos-engineering` folder on the team Mac. The easiest way is the step runner:
+`scripts/m1.sh 0`, then `1`, `2`, `3`, `4`, `5`, then `fix`, then `6`. It activates `.venv`, runs the commands below,
+and saves each step's output to `evidence/m1-step<N>.log`. Don't paste lines that contain `#` into zsh: by default it
+does not treat `#` as a comment. Docker Desktop must be running first (`docker info` must succeed).
 **Status column:** `NOT RUN` until it has been executed on the Mac. Simulation results are in `artifacts/safety-checks.md`.
 
 | # | Slide milestone | Expected outcome (slide) | Command(s) | What you should see | Evidence file | Status |
