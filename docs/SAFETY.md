@@ -1,50 +1,66 @@
-# Safety policy
+# Safety policy (v1, agreed 2026-10-10)
 
 Principle: **AI proposes validated JSON; deterministic code enforces limits.** The watchdog and
-kill switch run independently of AI availability. Any value marked TBD blocks live execution.
-Values marked *proposed* need team agreement before they become enforced defaults.
+kill switch run independently of AI availability. All values below live in `config/sandbox.toml`;
+this document and that file must agree (the code reads only the file).
 
-## Sandbox identity
-| Item | Value |
+## Sandbox identity (checked before every injection)
+| Check | Required value |
 |---|---|
-| Host | TBD (laptop/VM name) |
-| Runtime | Docker Compose (proposed) |
-| Compose project name | TBD — all targets must carry this project label |
-| Docker network(s) | TBD |
-| Identity check | Before any fault: Docker context is local, compose project label matches, target container is in allowlist. Abort otherwise. |
+| Docker context endpoint | local `unix://` socket (Docker Desktop on the team Mac) — remote contexts are refused |
+| Compose project label (`com.docker.compose.project`) | `opentelemetry-demo` |
+| Target network | `opentelemetry-demo` |
+| App | OpenTelemetry Demo `3.1.0`, `DEMO_VERSION=3.1.0` in `.env.override` |
 
 ## Target allowlist
-Containers/services explicitly listed after `/map-app`: TBD. Never: Docker daemon/host, the
-orchestrator, watchdog, load generator (except for traffic-spike), monitoring stack, any non-project container.
+- **Allowed:** ad, cart, checkout, currency, email, frontend, image-provider, payment, product-catalog,
+  quote, recommendation, shipping, astronomy-db, valkey-cart, kafka, accounting, fraud-detection.
+- **Protected (never a fault target):** frontend-proxy (our observation path), otel-collector, jaeger,
+  prometheus, grafana, opensearch, flagd, flagd-ui, telemetry-docs, opamp-server, and every container
+  outside the compose project. `load-generator` is only reachable through the `traffic-spike` adapter's Locust API.
+- The demo's own `flagd` failure flags are **not used** for injection.
 
-## Fault types
-| Fault | Mechanism (proposed) | Intensity bounds | Max duration | Rollback |
+## Fault types and bounds
+| Fault (`fault_type`) | Mechanism | Bounds | Max duration | Rollback (idempotent) |
 |---|---|---|---|---|
-| Container crash/stop | Docker API stop/kill on one container | 1 container at a time | TBD (proposed 60 s) | `docker start` / compose up for that service |
-| Network latency/loss | `tc netem` in target network namespace via helper container | latency ≤ TBD ms, loss ≤ TBD % | TBD (proposed 120 s) | `tc qdisc del`; helper removed |
-| Traffic spike | Load generator user/rate step | ≤ TBD × baseline rate | TBD | return to baseline rate |
-| Failed dependency / overloaded DB / full disk | TBD (Day 2 candidates) | TBD | TBD | TBD |
+| `container-stop` | `docker stop -t 5` (mode `stop`) or `docker kill` (mode `kill`) | 1 container | 120 s | `docker start` if not running |
+| `container-pause` | `docker pause` (hung dependency) | 1 container | 60 s | `docker unpause` if paused |
+| `network-delay` | `tc netem` from a helper container sharing the target's network namespace (`NET_ADMIN` on the helper only) | delay ≤ 2000 ms, jitter ≤ 500 ms, loss ≤ 30 % | 120 s | remove helper + `tc qdisc del dev eth0 root` |
+| `cpu-throttle` | `docker update --cpus` (overloaded service/DB) | cpus ≥ 0.05 | 120 s | restore recorded `NanoCpus` (0 → host CPU count, equivalent to unlimited) |
+| `traffic-spike` | Locust `/swarm` via `/loadgen/` | ≤ 50 users, spawn rate ≤ 10/s | 180 s | restore recorded user count |
 
-Every fault carries a **hard TTL enforced by the injector itself**, not only by the watchdog.
+- Max **1 active fault**; combined experiments (stretch) may hold 2 and must set `combined = true`.
+- Every fault has a **hard TTL in three places**: the adapter (e.g. netem helper sleeps then deletes its qdisc),
+  the orchestrator loop, and the watchdog (rolls back any registry entry past `expires_at`).
 
-## Abort thresholds (evaluated by watchdog on rolling window)
-| Signal | Threshold | Window |
+## Abort conditions (watchdog, separate process, rolling 10 s window, ≥ 5 samples)
+| # | Condition | Threshold |
 |---|---|---|
-| Error rate | TBD (proposed: > baseline + 20 pp, or > 50 % absolute) | TBD (proposed 10 s) |
-| p95 latency | TBD (proposed: > 5 × baseline p95) | TBD |
-| Blast radius | TBD (proposed: unhealthy services > planned targets + direct dependents; or user journeys failing > planned) | per poll |
-| Stale telemetry | No fresh probe sample for TBD (proposed 10 s) → abort | — |
-| Duration | elapsed > max duration → abort | — |
+| A1 | **Blast radius exceeded** — a journey *not* in the experiment's `expected_journeys` degrades | error rate > baseline + 20 pp, or p95 > max(5 × baseline p95, baseline p95 + 1000 ms) |
+| A2 | Global outage | error rate over all journeys > 90 % |
+| A3 | Stale telemetry | no new probe sample for 10 s |
+| A4 | Orchestrator dead (dead-man's switch) | orchestrator heartbeat older than 10 s |
+| A5 | Duration | any fault past its `expires_at` |
+| A6 | Kill switch | `state/KILL` exists |
+On abort the watchdog writes `runs/<id>/ABORT.json` and rolls back every fault of that run itself.
 
 ## Kill switch
-- Manual: single command (TBD name) **and** sentinel file (TBD path); Ctrl-C on orchestrator triggers the same path.
-- Effect: stop all fault injection, run all registered rollbacks (idempotent), record event.
-- Startup reconciler: on orchestrator start, detect and remove orphaned faults (e.g., leftover netem qdisc, stopped allowlisted container).
+- `chaosctl kill` → creates `state/KILL`, rolls back **all** registered faults, then reconciles orphans.
+- Ctrl-C in `chaosctl run` → same rollback path. New runs are refused while `state/KILL` exists
+  (`chaosctl kill --reset` clears it).
+- `chaosctl reconcile` (also run at the start of every command that injects) rolls back leftover registry
+  entries and removes orphan `chaosctl-netem-*` helpers.
 
-## Recovery criteria
-Recovery time = time from rollback complete to the start of the first of **N** consecutive windows
-where error rate ≤ baseline + δ and p95 ≤ k × baseline p95 and all target healthchecks pass.
-N, window, δ, k: TBD (proposed N=3, 5 s, δ=2 pp, k=1.5). Not recovered within TBD (proposed 120 s) = finding.
+## Steady-state gate (before injection)
+Pre-phase (20 s) must be within baseline: overall error rate ≤ baseline + 5 pp. Otherwise the run ends
+with `steady_state_not_met` and nothing is injected.
+
+## Recovery definition
+Recovery time = time from rollback complete to the **start** of the first of **3 consecutive 5 s windows**
+in which every journey has error rate ≤ baseline + 5 pp and p95 ≤ 1.5 × baseline p95 + 50 ms.
+Not recovered within 180 s ⇒ `recovered = false` (recorded as a finding).
 
 ## Required tests before live use
-See `/verify-safety`: allowlist, invalid params, timeout, threshold abort, kill switch, rollback, stale telemetry.
+`chaosctl selftest` (simulated, no Docker) and `pytest` cover: allowlist, invalid params, timeout,
+threshold abort, kill switch, rollback after exception, stale telemetry, AI unavailable.
+Results: `artifacts/safety-checks.md`. Live checks happen only via the tripwire run on the Mac.

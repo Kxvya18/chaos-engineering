@@ -1,8 +1,8 @@
-# PLAN — Milestone 1 (Day 1) — app agreed, rest provisional
+# PLAN — Milestone 1 (Day 1) — agreed 2026-10-10
 
 Status legend: **[proposed]** = recommendation awaiting team agreement; **[TBD]** = depends on open questions.
 
-## 1. Decision: Approach A — OpenTelemetry Demo (Astronomy Shop) on Docker Compose — AGREED
+## 1. Decision: Approach A — OpenTelemetry Demo 3.1.0 on Docker Compose — AGREED
 Fallback B (Docker example-voting-app) only if A fails the hour-1 hardware gate below.
 Host: team Mac (Apple Silicon M2) with Docker Desktop. Kubernetes rejected for Day 1.
 
@@ -10,7 +10,11 @@ Host: team Mac (Apple Silicon M2) with Docker Desktop. Kubernetes rejected for D
 enough for the demo's documented requirement; all images pull for arm64; store + load generator +
 Jaeger reachable; `tc netem` works in a helper container sharing a target's network namespace inside
 Docker Desktop's VM. Any FAIL → record in STATE.md and decide A-trimmed vs B within the hour.
-Upstream facts (license, RAM figure, ports, arm64 images) could not be fetched from this sandbox and are unverified.
+Verified from source (tag `3.1.0`, 2026-09-18) and Docker Hub: Apache-2.0; `otel/demo:3.1.0-*` images are amd64+arm64;
+compose memory limits ≈ 4.2 GB core + 3.0 GB observability + 1.1 GB full (limits, not measured usage);
+UI paths `/`, `/jaeger/`, `/loadgen/` on port 8080; Locust 2.44.4 autostarts 5 users.
+Static gaps already visible in compose: `cart` has no healthcheck and no `depends_on` on `valkey-cart`;
+`accounting`/`fraud-detection` have no healthcheck.
 
 ## 2. The 5 best differentiators (ranked by judge impact ÷ effort)
 | Rank | Differentiator | What judges see | Why it's unique | Effort | Day |
@@ -100,10 +104,10 @@ Parallelism (if ≥2 people): track 1–3 (app/observability) ‖ track 4–5 (s
 ## Decisions log
 | Decision | Status |
 |---|---|
-| Sample app | **OpenTelemetry Demo (A), agreed** |
-| Stack (Compose + Python) | proposed |
-| Day-1 faults F1, F2, tripwire | proposed |
-| Metrics + recovery definition | proposed (SAFETY.md) |
-| Runtime AI provider/model | TBD (dev: Claude Pro; runtime API key needed) |
+| Sample app | **OpenTelemetry Demo 3.1.0 (A), agreed** |
+| Stack (Compose + Python `chaosctl`) | agreed |
+| Fault adapters: container-stop, container-pause, network-delay, cpu-throttle, traffic-spike; tripwire | agreed |
+| Metrics + recovery definition | agreed (SAFETY.md v1) |
+| Runtime AI provider/model | Claude API `claude-opus-5-5` + deterministic fallback; API key with spend cap (owner) |
 | Team responsibilities | TBD |
 | GitHub default branch `main` | branch created; default switch pending owner (Settings) |

@@ -11,10 +11,10 @@ with fixes. Requirements: `docs/REQUIREMENTS.md`. MVP scope: `docs/MVP.md`.
 3. Update `docs/STATE.md` at the end of every working session.
 
 ## Stack
-- Sample app: OpenTelemetry Demo (Astronomy Shop) — agreed. Host: team Mac M2, Docker Desktop.
-- Deployment: Docker Compose (proposed). Orchestrator language: Python (proposed).
+- Sample app: OpenTelemetry Demo (Astronomy Shop) **3.1.0**, Docker Compose (core + full + observability). Host: team Mac M2 16 GB, Docker Desktop.
+- Our tool: `chaosctl` (Python ≥ 3.11, `src/chaosctl/`), config `config/sandbox.toml`.
 - The Claude cloud session has no Docker daemon: live runs happen on the Mac; cloud = code, simulated tests, GitHub.
-- Runtime AI: TBD (provider, model, budget). Development AI: Claude Code (separate cost line).
+- Runtime AI: Claude API (`claude-opus-5-5`, override `CHAOS_AI_MODEL`), only in `plan` and `report`; deterministic fallback when unavailable. Development AI: Claude Code on Claude Pro (separate cost line).
 
 ## Verified commands
 - `python3 scripts/check_repo.py` — docs, skill frontmatter, JSON artifacts (also CI job `repo-checks`).
