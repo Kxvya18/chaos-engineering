@@ -3,9 +3,9 @@
 | Item | Value |
 |---|---|
 | Repository | `Kxvya18/chaos-engineering` (https://github.com/Kxvya18/chaos-engineering) |
-| Default branch | **Not set yet** — repo had no branches at setup. First pushed branch becomes default on GitHub; proposed: create `main` and set it as default (repo-settings change → needs owner approval). |
-| CI checks | None defined. |
-| Branch protection | None known. |
+| Default branch | `main` created (from setup commit e83498b). GitHub made `claude/nice-bell-5v9ehy` default on first push; **owner must switch default to `main`** in Settings → General → Default branch (no API tool for this in the Claude session). |
+| CI checks | `.github/workflows/ci.yml`: `repo-checks` (scripts/check_repo.py), `python` (ruff 0.16.8; pytest 8.4.2 when tests exist). Required: both. |
+| Branch protection | None yet. Recommended (owner sets in Settings → Branches → `main`): require PR, require status checks `repo-checks` + `python`, block force-push. |
 | Tooling | Claude cloud session: GitHub MCP integration (no `gh` auth). Local: `gh auth login` (official browser flow). Never paste tokens into chat. |
 
 ## Operating policy (authorized by team)
@@ -21,7 +21,6 @@
 4. Review covers the latest commit SHA. 5. No unresolved substantive findings.
 6. Required approvals/protections satisfied. 7. Not draft, no conflicts.
 
-## Gap: no CI yet → interim validation policy (proposed)
-Until CI exists, auto-merge is **disabled**. Proposed first CI (GitHub Actions): `ruff check`, `pytest` (safety
-module unit tests incl. allowlist/timeout/kill switch in simulated mode), JSON-schema validation of
-`artifacts/*.json`. Once green on a PR, criterion 2 = that workflow.
+## Required checks
+Criterion 2 = both CI jobs green on the PR head SHA. CI never injects live faults; safety tests run in simulated mode.
+Owner delegated all GitHub handling to Claude (2026-10-10), within the policy above.

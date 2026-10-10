@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  repo-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Docs, skills and JSON artifacts
+        run: python scripts/check_repo.py
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tools
+        run: pip install "ruff==0.16.8" "pytest==8.4.2"
+      - name: Lint
+        run: ruff check .
+      - name: Unit tests (simulated mode; no live faults in CI)
+        run: |
+          if ls tests/test_*.py >/dev/null 2>&1; then
+            if [ -f pyproject.toml ]; then pip install -e .; fi
+            pytest -q
+          else
+            echo "No tests yet - skipping pytest"
+          fi

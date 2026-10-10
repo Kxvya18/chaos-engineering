@@ -1,32 +1,30 @@
-# PLAN — Milestone 1 (Day 1) — PROVISIONAL, not agreed
+# PLAN — Milestone 1 (Day 1) — app agreed, rest provisional
 
 Status legend: **[proposed]** = recommendation awaiting team agreement; **[TBD]** = depends on open questions.
 
-## 1. How we stand out (differentiators)
-Most teams will do: compose app → `docker kill` → Grafana screenshot → LLM summary. We differentiate on
-rigor and on framing impact in business terms. Each pillar maps to a slide requirement, so it is not gold-plating.
+## 1. Decision: Approach A — OpenTelemetry Demo (Astronomy Shop) on Docker Compose — AGREED
+Fallback B (Docker example-voting-app) only if A fails the hour-1 hardware gate below.
+Host: team Mac (Apple Silicon M2) with Docker Desktop. Kubernetes rejected for Day 1.
 
-| # | Differentiator | What it is | Slide requirement it strengthens | Day |
-|---|---|---|---|---|
-| D1 | **Journey-centric blast radius** | Map user journeys (e.g. browse / add-to-cart / checkout) onto services, in the spirit of TM Forum SID customer-facing vs resource-facing services (external concept). SLIs and abort limits are per journey, so findings read "checkout unavailable 42 s", not "container exited". | Dependency map; blast radius; findings | 1 (map), 2 (scoring) |
-| D2 | **Evidence-graded dependency map** | Every edge tagged `verified-static` (config/source file:line), `verified-runtime` (observed traffic) or `assumed`. Discrepancies shown. | "Manual corrections allowed"; occluded "semi-automatic" mapping hint | 1 |
-| D3 | **Fail-safe by construction** | (a) hard TTL inside each fault adapter, (b) independent watchdog process with its own probe — stale telemetry = abort, (c) kill switch via command + sentinel file + Ctrl-C, (d) startup reconciler removes orphaned faults. A deliberate **tripwire experiment** proves auto-abort on Day 1. | Safety limits, auto-stop, kill switch | 1 |
-| D4 | **Pre-registered hypotheses + run ledger** | Plan (incl. hypothesis) is hashed before execution; each run is an evidence bundle (plan, events.jsonl, raw metrics, analysis). Anyone can re-run analysis from raw data. Directly answers "never fabricate". | Findings report from real output | 1 (ledger), 2 (AI hypotheses) |
-| D5 | **AI with deterministic fallback** | Runtime AI ranks experiments via schema-validated JSON; if AI is unavailable or output invalid, a graph-based ranker produces a plan. Demo cannot die on an API hiccup. | AI planner; safety independent of AI | 2 (design on Day 1) |
-| D6 | **Defensible resilience score** | Explicit formula, e.g. per-journey SLO-budget consumed + recovery time vs target + detection, weights documented. | "Ideally a resilience score" | 2 |
+**Hour-1 hardware gate (verify, do not assume):** Mac RAM ≥ 16 GB and Docker Desktop memory raised
+enough for the demo's documented requirement; all images pull for arm64; store + load generator +
+Jaeger reachable; `tc netem` works in a helper container sharing a target's network namespace inside
+Docker Desktop's VM. Any FAIL → record in STATE.md and decide A-trimmed vs B within the hour.
+Upstream facts (license, RAM figure, ports, arm64 images) could not be fetched from this sandbox and are unverified.
 
-Trade-off: D1/D4 cost ~1–2 h extra on Day 1 but are what judges can't get from other teams. D6 and stretch goals wait for Day 2.
+## 2. The 5 best differentiators (ranked by judge impact ÷ effort)
+| Rank | Differentiator | What judges see | Why it's unique | Effort | Day |
+|---|---|---|---|---|---|
+| 1 | **Fail-safe by construction + "safety case"** | Tripwire experiment deliberately breaches a threshold → watchdog aborts → rollback → recovery measured; kill switch pressed live; `safety-checks.md` shows every control PASS with evidence | Most teams have a kill switch; few *prove* every control. Faults self-expire (TTL in adapter), watchdog is a separate process with its own probe (dead-man's switch: stale telemetry = abort), startup reconciler removes orphaned faults | M | 1 |
+| 2 | **Journey SLOs with error-budget burn-rate abort** | Impact stated as "checkout journey: 38 % failures for 42 s, 61 % of hourly error budget burned", not "container exited" | Blast radius measured in customer journeys (TM Forum customer-facing vs resource-facing service idea), abort uses SRE burn-rate, not a raw threshold | M | 1 (SLIs+abort), 2 (budget in score) |
+| 3 | **Trace-verified dependency map with drift report** | Map where each edge is `verified-static` (compose/source file:line), `verified-runtime` (trace evidence) or `assumed`, plus a list of where config and reality disagree | Uses the demo's tracing as evidence instead of hand-drawn boxes; answers "manual corrections allowed" with a visible audit trail | S–M | 1 |
+| 4 | **Pre-registered hypotheses + reproducible run ledger** | Before each run: hypothesis + abort rules, hashed. After: raw-data bundle; one command re-computes every number in the report | Turns "never fabricate" into something checkable — strongest anti-hallucination story | S | 1 (ledger), 2 (AI hypotheses) |
+| 5 | **Citation-checked AI findings with deterministic fallback** | AI explains propagation path and fixes; every claim cites a metric/run/trace ID, and code rejects claims whose cited numbers don't match analysis.json; if AI is unavailable a graph-based ranker/plain report still works | Grounded, verified AI rather than a free-text summary; demo can't die on an API hiccup | M | 2 (schemas designed Day 1) |
 
-## 2. Approaches (max two)
-| | **A — OpenTelemetry Demo (Astronomy Shop) on Docker Compose** [proposed if hardware allows] | **B — Docker example-voting-app on Docker Compose** [fallback] |
-|---|---|---|
-| Repo | `open-telemetry/opentelemetry-demo` | `dockersamples/example-voting-app` |
-| Why | Many services across languages, built-in load generator and tracing → runtime-verified map (D2) and journey SLIs (D1) nearly free; AI ranking is meaningful with many targets | ~5 components (web, Redis queue, worker, Postgres, results); very light; easy to reason about async queue + DB failures |
-| Cost | Heavy: needs a machine with several GB free RAM for Docker; longer startup; more to understand | Small graph → AI ranking looks trivial; we must build load + metrics ourselves |
-| Watch-out | Ships its own feature-flag failure scenarios — we will **not** use those as our injection, to keep faults ours and transparent | Less "cloud-native" impressiveness |
-| To verify before choosing | License, current resource requirement, compose startup on our hardware | License, still builds/runs |
+Not in top 5 (Day 2 stretch, in order): fix-and-rerun before/after; combined failure (traffic spike + dependency down); live dashboard (Grafana from the demo first, custom UI last).
 
-Both: faults via Docker API (crash), `tc netem` in the target's network namespace via a helper container (latency/loss), load-generator rate step (traffic spike). Kubernetes (kind) rejected for Day 1: more moving parts for the same requirements. (Upstream details above come from general knowledge and must be verified against each repo before we commit.)
+Trade-off: ranks 1–4 add ~2 h to Day 1 but are mostly fields, files and tests on top of work we need anyway.
+If behind schedule, cut in this order: drift report (3) → burn-rate (keep simple threshold) → one journey only.
 
 ## 3. Components and data flow [proposed]
 ```
@@ -84,28 +82,28 @@ Parallelism (if ≥2 people): track 1–3 (app/observability) ‖ track 4–5 (s
 ## 8. Risks and fallbacks
 | Risk | Impact | Fallback |
 |---|---|---|
-| Laptop RAM/CPU too small for approach A | Day-1 slip | Switch to B immediately (decide in first hour) |
+| Mac RAM too small / arm64 image missing for approach A | Day-1 slip | Trim A (stop non-journey services) or switch to B within hour 1 |
+| `tc netem` unsupported in Docker Desktop VM | latency fault blocked | Toxiproxy in front of one dependency, else `docker pause` |
 | No Docker daemon where Claude Code runs (true for the cloud session today) | Claude can't run live checks | Run the app on a team laptop; Claude Code locally there, or start a daemon in a VM we control |
 | `tc netem` needs NET_ADMIN / image lacks iproute2 | F2 blocked | helper container with NET_ADMIN sharing target netns; else Toxiproxy; else swap F2 for `docker pause` (freeze) |
-| Runtime AI access/budget unclear | Day-2 planner/analysis blocked | deterministic fallback ranker (D5); smaller/cheaper model for planning |
+| Runtime AI: Claude Pro covers Claude Code, not API calls (verify) | Day-2 AI blocked | Separate Anthropic API key with a small spend cap, cheap model; deterministic fallback (rank 5) |
 | Single point of failure: one laptop hosts everything | demo lost | push run bundles frequently; second machine can replay analysis from ledger |
-| Over-scoping differentiators | miss Day-1 minimum | D1–D4 are minimal on Day 1 (tags/fields, not features); cut D1 to one journey if behind |
+| Over-scoping differentiators | miss Day-1 minimum | Ranks 1–4 are minimal on Day 1 (fields, files, tests); follow the cut order in §2 |
 | Empty GitHub repo: first push sets default branch | wrong default | create `main` first, set as default (owner approval) |
 
-## 9. Open questions (answer these to finalize)
-1. **Team & time:** team size, who codes (Python/Docker comfort), exact Day-1 / Day-2 times and submission cut-off? Any judging criteria shared?
-2. **Hardware:** where will the app run (laptop OS, RAM, CPU), is Docker Desktop/Engine installed, can we use Linux `tc`/NET_ADMIN?
-3. **App:** OK with A (OTel Demo) with B as fallback, or do you already have an app in mind?
-4. **Runtime AI:** which provider/model can the running system call (API key available? budget cap?), and which Claude plan for development?
-5. **Slides:** can you share the missing sixth slide and confirm the occluded step-1 text on the problem slide?
+## 9. Open questions
+1. Mac RAM (8 / 16 / 24 GB)? Docker Desktop installed?
+2. Team size, Python/Docker comfort, exact Day-1/Day-2 times and submission cut-off, judging criteria?
+3. Runtime AI: willing to create an Anthropic API key with a spend cap (e.g. $5)?
+4. Missing sixth slide / occluded step-1 text?
 
 ## Decisions log
 | Decision | Status |
 |---|---|
-| Sample app | TBD |
+| Sample app | **OpenTelemetry Demo (A), agreed** |
 | Stack (Compose + Python) | proposed |
 | Day-1 faults F1, F2, tripwire | proposed |
 | Metrics + recovery definition | proposed (SAFETY.md) |
-| Runtime AI provider/model | TBD |
+| Runtime AI provider/model | TBD (dev: Claude Pro; runtime API key needed) |
 | Team responsibilities | TBD |
-| GitHub default branch `main` | proposed |
+| GitHub default branch `main` | branch created; default switch pending owner (Settings) |
