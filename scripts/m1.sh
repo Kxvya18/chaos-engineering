@@ -11,10 +11,14 @@ banner() { printf '\n==================== %s ====================\n' "$1"; }
 need_docker() { docker info >/dev/null 2>&1 || { echo "Docker is not running. Open Docker Desktop, wait for 'Engine running', then retry."; exit 1; }; }
 
 step0() { banner "0. Tests + simulated safety proof"
-  python -m pytest -q && chaosctl selftest; }
+  python -m pytest -q && chaosctl selftest --out evidence/safety-checks.md; }
 step1() { banner "1. Setup and app selection: app running end to end"; need_docker
-  scripts/demo.sh install && scripts/demo.sh up && scripts/demo.sh ps && scripts/demo.sh stats \
-    && chaosctl setup && chaosctl doctor
+  scripts/demo.sh install && scripts/demo.sh up && scripts/demo.sh ps && scripts/demo.sh stats && chaosctl setup
+  if ! chaosctl doctor; then
+    echo; echo "STOP: fix the FAIL rows above before step 2/3 (a baseline of a broken app is not a baseline)."
+    echo "Unhealthy container? try: docker logs <name> --tail 50   then   docker restart <name>"
+    return 1
+  fi
   echo "Open the shop: http://localhost:8080/  (Jaeger: /jaeger/  Load generator: /loadgen/)"; }
 step2() { banner "2. Application mapping"; need_docker
   chaosctl map && echo "Map: docs/DEPENDENCIES.md"; }

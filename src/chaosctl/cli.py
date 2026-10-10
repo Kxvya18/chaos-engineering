@@ -72,6 +72,13 @@ def cmd_doctor(cfg: config.Config, args) -> int:
         add("allowlisted targets running", not missing, "missing: " + ", ".join(missing) if missing else "all present")
         unhealthy = [r[0] for r in rows if len(r) > 2 and "unhealthy" in r[2]]
         add("no unhealthy containers", not unhealthy, ", ".join(unhealthy) or "none")
+        for name in unhealthy:  # say WHY: the container's own last health-check result
+            info = ctx.docker.inspect(name) or {}
+            log = ((info.get("State") or {}).get("Health") or {}).get("Log") or []
+            last = (log[-1].get("Output") or "").strip().replace("\n", " ")[:200] if log else "no health log"
+            streak = ((info.get("State") or {}).get("Health") or {}).get("FailingStreak")
+            add(f"  why {name} is unhealthy", False,
+                f"last health check: {last!r}; failing streak={streak}. Next: docker logs {name} --tail 50")
         img = ctx.docker.run(["image", "inspect", cfg.sandbox["netem_image"]], check=False)
         add("netem helper image built", img.returncode == 0,
             cfg.sandbox["netem_image"] + ("" if img.returncode == 0 else " (run `chaosctl setup`)"))
@@ -321,7 +328,7 @@ def cmd_report(cfg: config.Config, args) -> int:
 
 
 def cmd_selftest(cfg: config.Config, args) -> int:
-    out = cfg.artifacts_dir / "safety-checks.md"
+    out = Path(args.out) if args.out else cfg.artifacts_dir / "safety-checks.md"
     res = selftest.run_all(cfg, out, _git_commit())
     print(f"-> {out}")
     return 0 if all(r["status"] == "PASS" for r in res) else 1
@@ -378,7 +385,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("run_dir")
     rp = sub.add_parser("report", help="AI findings report with citation checks")
     rp.add_argument("--no-ai", action="store_true")
-    sub.add_parser("selftest", help="simulated safety verification -> artifacts/safety-checks.md")
+    st = sub.add_parser("selftest", help="simulated safety verification -> artifacts/safety-checks.md")
+    st.add_argument("--out", help="write the report here instead (e.g. evidence/safety-checks.md)")
     w = sub.add_parser("watchdog", help=argparse.SUPPRESS)
     w.add_argument("--run-dir", required=True)
     return p
