@@ -8,3 +8,8 @@ runs/*/heartbeat
 runs/*/DONE
 site/
 artifacts/ai-cache/
+
+# generated at runtime by chaosctl (never commit simulated output)
+docs/FMEA.md
+docs/DEPENDENCIES.md
+evidence/

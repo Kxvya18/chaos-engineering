@@ -55,6 +55,12 @@ flowchart LR
 | Watchdog | Separate OS process. Rolling-window abort rules, TTL and dead-man's switch. Never calls AI | `watchdog.py`, `safety.py` |
 | Analysis + report | Metrics computed by code. The AI writes the narrative, and every cited number is checked against `analysis.json` | `analysis.py`, `report.py` |
 
+## Agents (LangGraph)
+Nine agents share one mission state; LangGraph routes between them (`src/chaosctl/agents.py`, [`AGENTS.md`](AGENTS.md)).
+Cartographer · Baseline Sentinel · Risk Planner (AI) · Safety Officer · Chaos Injector · Recovery Agent · Incident
+Analyst (AI) · Remediation Agent (human approval, vetted fix, re-test) · Reporter. Only two agents call the LLM;
+the watchdog runs outside the graph. Deployed as one container next to the demo (`scripts/deploy.sh up`).
+
 ## How the AI makes decisions
 | Decision point | AI input | AI output (JSON schema) | What code enforces |
 |---|---|---|---|

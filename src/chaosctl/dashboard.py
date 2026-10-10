@@ -192,9 +192,6 @@ def live_state(cfg: Config, ctx: faults.Ctx) -> str:
     return pages.live_fragment(cfg, overlay, journeys, (st["live"] or {}).get("run_id"), green)
 
 
-LIVE_INTRO = ("<h1>Live test</h1><p class='lead'>Watch a failure spread through the shop and heal. Updates every 2 s "
-              "from test requests, container health and the active faults.</p>")
-
 LIVE_MAP_JS = """<div id="livemap">loading…</div><script>
 async function lm(){try{document.getElementById('livemap').innerHTML=await (await fetch('/api/live-map')).text()}catch(e){}}
 lm();setInterval(lm,2000);</script>"""
@@ -222,9 +219,6 @@ def make_handler(cfg: Config, ctx_factory: Callable[[], faults.Ctx]):
                     return self._send(200, pages.page("Overview", pages.home_html(cfg, rows), "/"))
                 if parts == ["runs"]:
                     return self._send(200, index_html(cfg))
-                if parts == ["live"]:
-                    return self._send(200, pages.page("Live test", LIVE_INTRO + "<div class='two'><div>" + LIVE_MAP_JS
-                                                      + "</div><div>" + live_panel() + "</div></div>", "/live"))
                 if parts == ["mission"]:
                     return self._send(200, mission_html(cfg))
                 if parts == ["api", "mission"]:

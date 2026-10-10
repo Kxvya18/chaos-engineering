@@ -381,8 +381,8 @@ def live_fragment(cfg: Config, overlay: dict[str, str], journeys: dict[str, dict
 def fmea_html(cfg: Config) -> str:
     fp = cfg.artifacts_dir / "fmea.json"
     if not fp.exists():
-        return page("AI test plan", "<h1>AI test plan</h1><p class='lead'>Not created yet. Run <code>chaosctl autopilot</code> "
-                    "(or <code>chaosctl plan</code>).</p>", "/fmea")
+        return page("AI test plan", "<h1>AI test plan</h1><p class='lead'>Not created yet. Start an <a href='/mission'>Agent mission</a> "
+                    "(or run <code>chaosctl plan</code>).</p>", "/fmea")
     f = read_json(fp)
     m = f["meta"]
     if m["method"] == "ai":

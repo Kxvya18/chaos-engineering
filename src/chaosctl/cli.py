@@ -194,17 +194,6 @@ def project_health(cfg: config.Config, ctx: faults.Ctx) -> dict[str, Any]:
     return health.project_health(cfg, ctx.docker)
 
 
-def _history(cfg: config.Config) -> list[dict[str, Any]]:
-    out = []
-    for p in sorted(cfg.runs_dir.glob("*/analysis.json")):
-        a = read_json(p)
-        for f in a["faults"]:
-            out.append({"run_id": a["run_id"], "fault_type": f["fault_type"], "target": f["target"],
-                        "outcome": a["outcome"], "severity": a["severity"]["label"],
-                        "impacted_journeys": a["impacted_journeys"], "recovery_time_s": a["recovery_time_s"]})
-    return out
-
-
 def cmd_plan(cfg: config.Config, args) -> int:
     out = Path(args.out)
     res = fmea.run(cfg, use_ai=not args.no_ai)  # AI writes the FMEA and selects what to inject
@@ -231,46 +220,6 @@ def print_fmea(f: dict[str, Any], top: int = 8) -> None:
         print(f"   {s['rank']}. {s['candidate_id']}: {s['reason']}")
     for p in f["problems"]:
         print(f"  NOT EXECUTABLE: {p}")
-
-
-def cmd_autopilot(cfg: config.Config, args) -> int:
-    """AI decides what to break (FMEA), the safety engine injects, results are measured and explained."""
-    base_path = cfg.artifacts_dir / "baseline.json"
-    if not base_path.exists():
-        print("refusing: no baseline. First prove the system works: `chaosctl baseline`")
-        return 2
-    base = read_json(base_path)
-    if base.get("quality") and not base["quality"]["pass"]:
-        print("refusing: the baseline was REJECTED - the system is not healthy yet, so there is nothing to experiment on")
-        return 2
-    res = fmea.run(cfg, use_ai=not args.no_ai)
-    print_fmea(res["fmea"])
-    plan = res["plan"]
-    planner.verify_plan(plan)
-    exps = plan["experiments"][: args.max]
-    if not args.yes:
-        ans = input(f"\nInject these {len(exps)} failure(s) one at a time, with all safety controls on? [y/N] ")
-        if ans.strip().lower() not in ("y", "yes"):
-            print("stopped: nothing injected")
-            return 0
-    ctx = _ctx(cfg)
-    for exp in exps:
-        print(f"\n==================== {exp['id']} ====================\nwhy: {exp['reason']}\nhypothesis: {exp['hypothesis']}")
-        orch = Orchestrator(cfg, ctx, Journeys(cfg, ctx.http).all(), base, progress=print, use_ai=not args.no_ai,
-                            explain=True)
-        try:
-            run_dir = orch.run(exp, {"path": "artifacts/experiment-plan.json", "sha256": plan["meta"]["sha256"]})
-        except safety.SafetyError as exc:
-            print(f"REFUSED by safety policy: {exc}")
-            return 3
-        a = read_json(run_dir / "analysis.json")
-        print(f"result: {a['outcome']} impacted={a['impacted_journeys']} restore={a.get('time_to_restore_s')} s")
-        if a["outcome"] in ("kill_switch", "interrupted"):
-            print("stopping autopilot: operator stopped the run")
-            break
-    print_fmea(read_json(cfg.artifacts_dir / "fmea.json"))
-    print("\nDashboard: chaosctl dashboard -> http://127.0.0.1:8090/fmea")
-    return 0
 
 
 def cmd_mission(cfg: config.Config, args) -> int:
@@ -514,10 +463,6 @@ def build_parser() -> argparse.ArgumentParser:
     mi.add_argument("--reuse", action="store_true", help="reuse an accepted map + baseline")
     mi.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     mi.add_argument("--no-ai", action="store_true")
-    ap = sub.add_parser("autopilot", help="AI writes the FMEA, picks failures, engine injects safely, results measured")
-    ap.add_argument("--max", type=int, default=2, help="max experiments to run (default 2)")
-    ap.add_argument("--yes", action="store_true", help="do not ask for confirmation")
-    ap.add_argument("--no-ai", action="store_true", help="rule-based FMEA and analysis")
     pl = sub.add_parser("plan", help="AI FMEA: rate failure modes, select what to inject (no injection)")
     pl.add_argument("--no-ai", action="store_true")
     pl.add_argument("--out", default="artifacts/experiment-plan.json")
@@ -562,8 +507,8 @@ def build_parser() -> argparse.ArgumentParser:
 COMMANDS = {"doctor": cmd_doctor, "setup": cmd_setup, "map": cmd_map, "baseline": cmd_baseline, "plan": cmd_plan,
             "run": cmd_run, "kill": cmd_kill, "reconcile": cmd_reconcile, "status": cmd_status,
             "analyze": cmd_analyze, "report": cmd_report, "selftest": cmd_selftest, "watchdog": cmd_watchdog,
-            "explain": cmd_explain, "autopilot": cmd_autopilot,
-            "mission": cmd_mission, "decide": cmd_decide, "compare": cmd_compare, "scenarios": cmd_scenarios,
+            "explain": cmd_explain, "mission": cmd_mission, "decide": cmd_decide, "compare": cmd_compare,
+            "scenarios": cmd_scenarios,
             "dashboard": cmd_dashboard, "export-site": cmd_export_site}
 
 

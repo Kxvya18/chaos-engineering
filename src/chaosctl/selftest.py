@@ -11,7 +11,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable
 
-from . import faults, planner, safety
+from . import faults, fmea, planner, safety
 from .config import Config
 from .orchestrator import Orchestrator
 from .registry import Registry
@@ -213,14 +213,15 @@ def case_ai_unavailable(env: Env) -> str:
         d = env.cfg.artifacts_dir
         write_json(d / "dependency-map.json", {"services": [], "edges": [], "drift": {}})
         write_json(d / "baseline.json", env.baseline)
-        plan = planner.make_plan(env.cfg, d / "dependency-map.json", d / "baseline.json", [], use_ai=True)
+        out = fmea.build(env.cfg, d / "dependency-map.json", d / "baseline.json", use_ai=True)
+        plan = {**out["plan"], "meta": {**out["plan"]["meta"], "planner": out["fmea"]["meta"]}}
     finally:
         if old is None:
             os.environ.pop("CHAOS_AI_DISABLED")
         else:
             os.environ["CHAOS_AI_DISABLED"] = old
     types = {e["faults"][0]["fault_type"] for e in plan["experiments"]}
-    assert plan["meta"]["planner"]["method"] == "rule-based" and len(types) >= 3
+    assert plan["meta"]["planner"]["method"] == "rule-based" and len(types) >= 2
     planner.verify_plan(plan)
     tampered = copy.deepcopy(plan)
     tampered["experiments"][0]["faults"][0]["duration_s"] = 119

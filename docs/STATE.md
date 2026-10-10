@@ -29,7 +29,7 @@ _Last updated: 2026-10-10 — verified rollback, AI self-correction loop, review
 
 - First live Mac run (old code): app up, but `product-catalog` was UNHEALTHY (120 % CPU); 5/7 journeys timed out at 5 s.
   No valid baseline yet. Kill switch left engaged. Docker Desktop memory 7.75 GiB.
-- Added: health-check blind-spot metric, live blast-radius map, `doctor --collect`, AI FMEA (`plan`/`autopilot`)
+- Added: health-check blind-spot metric, live blast-radius map, `doctor --collect`, AI FMEA (`plan`; `autopilot` later replaced by `mission`)
   with measured S/D/RPN per run, `/fmea` page.
 
 - Verified rollback: pre-injection snapshot → undo → state checks → retry → `docker restart` (`faults.rollback_verified`).

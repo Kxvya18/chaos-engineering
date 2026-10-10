@@ -8,7 +8,7 @@ Have open: dashboard (`scripts/m1.sh 6`) and a terminal. Navigate with the numbe
 | 0:00–0:15 | **Overview**: key findings + Day-1 checkpoint | "Every row comes from evidence, not ticked by hand. The system was proven healthy before we broke anything." |
 | 0:15–0:35 | **System map** + **Normal behaviour** | "Services and data flows, confirmed by live traces. Five minutes of normal behaviour: error rate, latency, container health. Steady state accepted." |
 | 0:35–1:05 | **AI test plan** | "Bosch plans safety with FMEA. Our AI wrote one for this shop: how each part can fail, how bad, how likely, would we notice. Then it picked what to break first, and why." |
-| 1:05–1:45 | Terminal `chaosctl autopilot` + **Live test** map turning red/orange | "The safety engine injects the AI's choice. Watch the blast radius spread on the live map. Only the expected journeys fail." |
+| 1:05–1:45 | **Agent mission** → Start mission: agents light up, live map turns red/orange | "The safety engine injects the AI's choice. Watch the blast radius spread on the live map. Only the expected journeys fail." |
 | 1:45–2:15 | **Results** → open the test: KPIs, **hidden outage**, where/how/why, fixes | "Customers failed for N seconds while every health check said green. That's the blind spot, measured. The FMEA row updates: predicted vs measured." |
 | 2:15–2:30 | Tripwire run + KILL SWITCH | "If damage spreads beyond what we allowed, the watchdog stops it by itself. One button undoes everything." |
 

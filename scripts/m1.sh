@@ -26,7 +26,7 @@ step3() { banner "3. Monitoring baseline (steady load, ${BASELINE_S:-300} s)"; n
   chaosctl baseline --duration "${BASELINE_S:-300}"; }
 step4() { banner "4. AI-driven failure injection: AI writes the FMEA, picks what to break, engine injects safely"; need_docker
   [ -z "${ANTHROPIC_API_KEY:-}" ] && echo "NOTE: no ANTHROPIC_API_KEY set - the FMEA and analysis will be RULE-BASED (labelled as such)."
-  chaosctl autopilot --max "${AI_MAX:-2}"; }
+  chaosctl mission --reuse --max "${AI_MAX:-5}" --fault-seconds "${FAULT_S:-30}"; }
 step5() { banner "5a. Safety: automatic stop on threshold breach (tripwire)"; need_docker
   chaosctl run --tripwire
   banner "5b. Safety: kill switch during a live run"

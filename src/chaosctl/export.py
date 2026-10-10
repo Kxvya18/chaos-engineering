@@ -26,7 +26,7 @@ def _static(html: str, stamp: str) -> str:
     html = re.sub(r'<form class="start".*?</form>', "", html, flags=re.DOTALL)
     html = re.sub(r"""href=(["'])/runs/([A-Za-z0-9._-]+)/\1""", r'href="run-\2.html"', html)
     html = re.sub(r"""href=(["'])/compare/([A-Za-z0-9._-]+)\1""", r'href="\2.html"', html)
-    pages_map = {"/map": "map", "/baseline": "baseline", "/fmea": "fmea", "/live": "live", "/mission": "mission",
+    pages_map = {"/map": "map", "/baseline": "baseline", "/fmea": "fmea", "/mission": "mission",
                  "/runs": "runs", "/": "index"}
     return re.sub(r"""href=(["'])(/[a-z]*)\1""",
                   lambda m: f'href="{pages_map[m.group(2)]}.html"' if m.group(2) in pages_map else m.group(0), html)
@@ -71,9 +71,6 @@ def export(cfg: Config, out: Path) -> list[Path]:
     write("baseline.html", pages.baseline_html(cfg))
     write("fmea.html", pages.fmea_html(cfg))
     write("mission.html", mission_static(cfg))
-    write("live.html", pages.page("Live test", "<h1>Live test</h1><p class='lead'>The live view needs the running "
-                                  "dashboard (<code>chaosctl dashboard</code>). In this snapshot, open a test from "
-                                  "<a href='/runs'>Results</a> to see how the failure spread and healed.</p>", "/live"))
     write("runs.html", dashboard.index_html(cfg).replace(dashboard.live_panel(), ""))
     for d in sorted(cfg.runs_dir.glob("*")) if cfg.runs_dir.exists() else []:
         if not (d / "analysis.json").exists():
