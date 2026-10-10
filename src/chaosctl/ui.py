@@ -12,7 +12,7 @@ STEPS = [  # (path, tab label) in the order a reviewer should walk through them
     ("/map", "System map"),
     ("/baseline", "Normal behaviour"),
     ("/fmea", "AI test plan"),
-    ("/live", "Live test"),
+    ("/mission", "Agent mission"),
     ("/runs", "Results"),
 ]
 

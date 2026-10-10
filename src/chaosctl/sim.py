@@ -135,6 +135,22 @@ class FakeDocker:
                     rows.append(f"{n}\t{c['status']}\t{st}")
                 return Result(0, "\n".join(rows) + "\n", "")
             return Result(0, "\n".join(self.helpers) + "\n", "")
+        if cmd == "compose" and "up" in a:  # a fix applied/reverted as a compose override (remediate.py)
+            files = [a[i + 1] for i, x in enumerate(a) if x == "-f"]
+            service = a[-1]
+            fix_text = ""
+            for f in files:
+                if f.endswith("compose.chaos-fix.yaml"):
+                    with open(f) as fh:
+                        fix_text = fh.read()
+            c = self.containers.get(service)
+            if not c:
+                return Result(1, "", f"no such service: {service}")
+            c.update(status="running", pid=c["pid"] + 7, restart_count=0)  # re-created container
+            if service == "valkey-cart":
+                self.carts.clear()  # a re-created in-memory store starts empty
+                self.persistent[service] = "--appendonly" in fix_text
+            return ok
         if cmd == "context":
             if a[1] == "show":
                 return Result(0, "desktop-linux\n", "")

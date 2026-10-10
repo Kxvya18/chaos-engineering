@@ -9,8 +9,11 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
+import subprocess
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
+from urllib.parse import parse_qs
 
 from . import faults, health, htmlreport, metrics, pages, safety
 from .config import Config
@@ -95,6 +98,74 @@ def live_panel() -> str:
 <details><summary>Engine event log</summary><pre id="events">loading…</pre></details>""" + LIVE_JS
 
 
+MISSION_JS = """<script>
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ICON={idle:'○',working:'◐',waiting:'⏸',done:'✓',stopped:'■',failed:'✕'};
+function approval(m){const a=m.approval,el=document.getElementById('approval');
+if(!a||a.status!=='pending'){el.innerHTML=a?`<div class="card small">Last fix decision: <b>${esc(a.fix.title)}</b> → <b>${esc(a.status)}</b></div>`:'';return}
+el.innerHTML=`<div class="card result sev-high"><h3>Human approval needed: apply a fix?</h3>
+<p class="small"><b>Test:</b> ${esc(a.test)}<br><b>Impact:</b> ${esc(a.impact)}</p>
+<p><b>Proposed vetted fix:</b> ${esc(a.fix.title)} <span class="small muted">(pattern ${esc(a.fix.pattern)}, service ${esc(a.fix.service)})</span><br>
+<span class="small"><b>How it will be proven:</b> ${esc(a.fix.proof)}</span></p>
+<p class="small"><b>Other recommended fixes from the Incident Analyst:</b></p><ol class="small">${(a.recommendations||[]).map(r=>`<li><b>${esc(r.pattern_name)}</b>: ${esc(r.change)}</li>`).join('')}</ol>
+<form method="post" action="/api/mission/approve" style="display:flex;gap:10px"><input type="hidden" name="id" value="${esc(a.id)}">
+<button class="btn primary" name="decision" value="apply">✓ Approve: apply fix and re-test</button>
+<button class="btn" name="decision" value="skip">✕ Decline: keep rollback only</button></form></div>`}
+async function mission(){try{const m=await (await fetch('/api/mission')).json();
+const box=document.getElementById('agents');if(!m.mission_id){box.innerHTML='<p class="muted">No mission yet. Start one above.</p>';return}
+document.getElementById('mstatus').innerHTML=`Mission <code>${esc(m.mission_id)}</code> · <b>${esc(m.status)}</b>`+
+ (m.current?` · now: <b>${esc(m.current.title)}</b> (${esc(m.current.phase)})`:'')+(m.stop_reason?` · stopped: ${esc(m.stop_reason)}`:'');
+box.innerHTML=Object.entries(m.agents).map(([k,a])=>`<div class="card agent ${a.status}${m.active===k&&m.status==='running'?' on':''}">
+<div class="an"><span class="ai">${ICON[a.status]||'○'}</span> ${esc(a.name)}</div><div class="small muted">${esc(a.task)||'waiting'}</div></div>`).join('');
+document.getElementById('mres').innerHTML=(m.results||[]).map(r=>`<tr><td>${esc(r.priority)}</td><td>${r.run_id?`<a href="/runs/${esc(r.run_id)}/">${esc(r.title)}</a>`:esc(r.title)}</td>
+<td>${esc((r.impacted||[]).join(', ')||'none')}</td><td>${esc(r.severity)}</td><td>${r.rollback_verified?'✓ verified':esc(r.rollback_verified??'n/a')}</td><td class="small">${esc(r.remediation||r.reason)}</td></tr>`).join('');
+document.getElementById('mlog').textContent=(m.log||[]).slice(-25).join('\\n');
+document.getElementById('startbtn').disabled=m.status==='running';approval(m);}catch(e){}}
+mission();setInterval(mission,2000);</script>"""
+
+MISSION_CSS = """<style>.agents{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px}
+.agent{margin:0;padding:10px 12px}.agent .an{font-weight:650}.agent.done .ai{color:var(--good)}.agent.failed .ai{color:var(--critical)}
+.agent.stopped .ai{color:var(--serious)}.agent.on{border-color:var(--series-1);box-shadow:0 0 0 2px var(--series-1)}
+.agent.working .ai{color:var(--series-1)}.agent.waiting{border-color:var(--serious);box-shadow:0 0 0 2px var(--serious)}form.start{display:flex;gap:14px;align-items:center;flex-wrap:wrap}</style>"""
+
+
+def mission_html(cfg: Config) -> str:
+    body = f"""{MISSION_CSS}<h1>Agent mission</h1>
+<p class="lead">Nine agents, coordinated by LangGraph, test the shop end to end: map it, prove it is healthy, plan the riskiest
+failures, then for each one (in priority order) clear it, inject it, undo it with proof, explain it and fix it or roll it back.</p>
+<div class="card"><form class="start" method="post" action="/api/mission/start"
+onsubmit="return confirm('Start the mission? Failures will be injected into the sandbox one at a time, with all safety controls on.')">
+<button id="startbtn" class="btn primary" type="submit">▶ Start mission</button>
+<label>fixes <select name="approval"><option value="ask" selected>ask me before each fix</option>
+<option value="auto">pre-approve vetted fixes</option><option value="never">recommend only</option></select></label>
+<label><input type="checkbox" name="reuse" value="1"> reuse the accepted map + baseline</label>
+<label>fault seconds <input name="fault_seconds" value="30" size="3"></label>
+<label>tests <input name="max" value="5" size="2"></label></form>
+<p class="small muted" id="mstatus"></p></div><div id="approval"></div>
+<h2>Agents</h2><div class="agents" id="agents"></div>
+<div class="two" style="margin-top:14px"><div><h2>Live blast radius</h2>{LIVE_MAP_JS}</div><div>{live_panel()}</div></div>
+<h2>Test results</h2><div class="card wrap"><table><tr><th>P</th><th>Test</th><th>Customers affected</th><th>Severity</th>
+<th>Undo</th><th>Remediation</th></tr><tbody id="mres"></tbody></table></div>
+<details open><summary>Agent activity log</summary><pre id="mlog"></pre></details>{MISSION_JS}"""
+    return pages.page("Agent mission", body, "/mission")
+
+
+def start_mission(cfg: Config, form: dict[str, str]) -> str:
+    from . import agents
+    if agents.mission_running(cfg):
+        return "a mission is already running"
+    if safety.kill_engaged(cfg):
+        return "kill switch engaged: reset it with `chaosctl kill --reset` first"
+    args = [sys.executable, "-m", "chaosctl", "mission", "--yes",
+            "--max", str(int(form.get("max") or 5)), "--fault-seconds", str(int(form.get("fault_seconds") or 30))]
+    args += ["--approval", form.get("approval") if form.get("approval") in ("ask", "auto", "never") else "ask"]
+    if form.get("reuse"):
+        args.append("--reuse")
+    log = (cfg.artifacts_dir / "mission-launch.log").open("a")
+    subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, cwd=str(cfg.root))
+    return "started"
+
+
 def project_health(cfg: Config, ctx: faults.Ctx) -> dict[str, Any]:
     from .cli import project_health as ph
     return ph(cfg, ctx)
@@ -120,9 +191,6 @@ def live_state(cfg: Config, ctx: faults.Ctx) -> str:
     overlay = pages.live_overlay(cfg, [f["target"] for f in st["active_faults"]], snap, failing)
     return pages.live_fragment(cfg, overlay, journeys, (st["live"] or {}).get("run_id"), green)
 
-
-LIVE_INTRO = ("<h1>Live test</h1><p class='lead'>Watch a failure spread through the shop and heal. Updates every 2 s "
-              "from test requests, container health and the active faults.</p>")
 
 LIVE_MAP_JS = """<div id="livemap">loading…</div><script>
 async function lm(){try{document.getElementById('livemap').innerHTML=await (await fetch('/api/live-map')).text()}catch(e){}}
@@ -151,9 +219,11 @@ def make_handler(cfg: Config, ctx_factory: Callable[[], faults.Ctx]):
                     return self._send(200, pages.page("Overview", pages.home_html(cfg, rows), "/"))
                 if parts == ["runs"]:
                     return self._send(200, index_html(cfg))
-                if parts == ["live"]:
-                    return self._send(200, pages.page("Live test", LIVE_INTRO + "<div class='two'><div>" + LIVE_MAP_JS
-                                                      + "</div><div>" + live_panel() + "</div></div>", "/live"))
+                if parts == ["mission"]:
+                    return self._send(200, mission_html(cfg))
+                if parts == ["api", "mission"]:
+                    from . import agents
+                    return self._send(200, json.dumps(agents.current_mission(cfg) or {}, default=str), "application/json")
                 if parts == ["api", "live-map"]:
                     return self._send(200, live_state(cfg, ctx_factory()))
                 if parts == ["fmea"]:
@@ -182,6 +252,23 @@ def make_handler(cfg: Config, ctx_factory: Callable[[], faults.Ctx]):
                 return self._send(500, f"error: {type(exc).__name__}: {exc}", "text/plain")
 
         def do_POST(self) -> None:  # noqa: N802
+            if self.path.rstrip("/") == "/api/mission/start":
+                n = int(self.headers.get("Content-Length") or 0)
+                form = {k: v[0] for k, v in parse_qs(self.rfile.read(n).decode()).items()}
+                msg = start_mission(cfg, form)
+                self.send_response(303)
+                self.send_header("Location", "/mission?msg=" + msg.replace(" ", "+")[:80])
+                self.end_headers()
+                return None
+            if self.path.rstrip("/") == "/api/mission/approve":
+                from . import agents
+                n = int(self.headers.get("Content-Length") or 0)
+                form = {k: v[0] for k, v in parse_qs(self.rfile.read(n).decode()).items()}
+                agents.decide(cfg, form.get("id", ""), form.get("decision", ""))
+                self.send_response(303)
+                self.send_header("Location", "/mission")
+                self.end_headers()
+                return None
             if self.path.rstrip("/") == "/api/kill":
                 safety.engage_kill(cfg, "dashboard kill switch")
                 rep = faults.reconcile(ctx_factory(), Registry(cfg.state_dir))

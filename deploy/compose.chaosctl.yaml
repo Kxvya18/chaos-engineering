@@ -1,6 +1,8 @@
-# Deployed mode: chaosctl dashboard + on-demand runs as a container next to the demo.
-#   docker compose -f deploy/compose.chaosctl.yaml up -d --build           # dashboard on http://127.0.0.1:8090
-#   docker compose -f deploy/compose.chaosctl.yaml run --rm chaosctl run --scenario cart-store-crash
+# Production-style deployment of the chaos platform next to the OpenTelemetry Demo (one command: scripts/deploy.sh up).
+#   - dashboard + agent missions (LangGraph) in one container, published on 127.0.0.1:8090 only
+#   - talks to the host Docker daemon through the socket (needed to inject and roll back faults)
+#   - the demo directory is mounted at the SAME absolute path so `docker compose` fixes resolve the demo's bind mounts
+#   - runs, artifacts and state persist on the host (evidence survives container restarts)
 name: chaosctl
 services:
   chaosctl:
@@ -8,18 +10,25 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     image: chaosctl:local
+    restart: unless-stopped
     ports:
       - "127.0.0.1:8090:8090"   # never exposed beyond the Mac
     environment:
       CHAOS_BASE_URL: http://frontend-proxy:8080
       CHAOS_LOCUST_URL: http://frontend-proxy:8080/loadgen
       CHAOS_JAEGER_API: http://frontend-proxy:8080/jaeger/ui/api
+      CHAOS_DEMO_DIR: ${CHAOS_DEMO_DIR:?set CHAOS_DEMO_DIR to the OpenTelemetry Demo directory}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CHAOS_AI_MODEL: ${CHAOS_AI_MODEL:-claude-opus-5-5}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${CHAOS_DEMO_DIR}:${CHAOS_DEMO_DIR}
       - ../runs:/app/runs
       - ../artifacts:/app/artifacts
       - ../state:/app/state
+    deploy:
+      resources:
+        limits: {cpus: "1.0", memory: 512M}
     networks: [demo]
 networks:
   demo:

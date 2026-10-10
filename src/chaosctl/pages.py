@@ -369,8 +369,8 @@ def live_fragment(cfg: Config, overlay: dict[str, str], journeys: dict[str, dict
     if platform_green and any(v["ok"] < v["n"] for v in journeys.values()):
         blind = ('<div class="card"><span class="status warn">● Hidden outage</span> customers are failing while every '
                  'container still reports healthy</div>')
-    head = (f"Test in progress (<code>{esc(run_id)}</code>)" if run_id else "No test running. Start one with "
-            "<code>chaosctl autopilot</code>; this page updates by itself.")
+    head = (f"Test in progress (<code>{esc(run_id)}</code>)" if run_id else "No fault active right now; "
+            "this view updates by itself.")
     return f"""<p>{head} · Platform health checks: {plat}</p>{blind}
 {('<h3>Customer journeys, last 10 s (successful / total)</h3><div class="kpis">' + tiles + '</div>') if tiles else ''}
 <div class="legend"><span>✕ red border = broken on purpose / container down</span><span>! orange border = on a failing customer journey</span></div>
@@ -381,8 +381,8 @@ def live_fragment(cfg: Config, overlay: dict[str, str], journeys: dict[str, dict
 def fmea_html(cfg: Config) -> str:
     fp = cfg.artifacts_dir / "fmea.json"
     if not fp.exists():
-        return page("AI test plan", "<h1>AI test plan</h1><p class='lead'>Not created yet. Run <code>chaosctl autopilot</code> "
-                    "(or <code>chaosctl plan</code>).</p>", "/fmea")
+        return page("AI test plan", "<h1>AI test plan</h1><p class='lead'>Not created yet. Start an <a href='/mission'>Agent mission</a> "
+                    "(or run <code>chaosctl plan</code>).</p>", "/fmea")
     f = read_json(fp)
     m = f["meta"]
     if m["method"] == "ai":

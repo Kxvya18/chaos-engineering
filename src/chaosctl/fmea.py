@@ -90,17 +90,22 @@ def rule_based_row(cfg: Config, c: dict[str, Any], node: dict[str, Any]) -> dict
     """Deterministic FMEA ratings used when the AI is unavailable (and as the documented baseline method)."""
     w = max((cfg.journeys[j].weight for j in c["expected_journeys"]), default=0.2)
     sev = max(1, round(10 * w)) - (2 if c["fault_type"] in ("network-delay", "cpu-throttle") else 0)
-    if c["target"] == "valkey-cart":
-        sev = 10  # holds customer state: crash = possible data loss
+    stateless_store = c["kind"] == "datastore" and "volumes" in node and not node["volumes"]  # known, not assumed
+    data_loss = c["fault_type"] == "container-stop" and stateless_store
+    if data_loss:
+        sev = 10  # datastore without a volume: a crash can wipe customer data
     occ = 3 + (2 if (_mem_mib(node.get("memory_limit")) or 999) <= 32 else 0) + (1 if node.get("healthcheck") is False else 0) \
         + (1 if c["kind"] == "datastore" else 0)
     det = {"container-stop": 3 if node.get("healthcheck") else 5, "container-pause": 5 if node.get("healthcheck") else 8,
            "network-delay": 9, "cpu-throttle": 8, "traffic-spike": 7}[c["fault_type"]]
+    if data_loss:
+        det = 8  # the restart policy turns health green again; lost data is invisible to health checks
     return {"candidate_id": c["candidate_id"], "effect": f"{FAULT_NAMES[c['fault_type']]} of {c['target']} degrades "
             f"{', '.join(c['expected_journeys']) or 'no journey'}", "affected_journeys": c["expected_journeys"],
             "severity": max(1, min(10, sev)), "occurrence": max(1, min(10, occ)), "detection": det,
             "rationale": f"rule-based: journey weight {w}, memory limit {node.get('memory_limit')}, "
-                         f"healthcheck={node.get('healthcheck')}, kind={c['kind']}"}
+                         f"healthcheck={node.get('healthcheck')}, kind={c['kind']}"
+                         + (", datastore without a volume (data-loss risk)" if data_loss else "")}
 
 
 def validate(data: dict[str, Any], by_id: dict[str, Any]) -> str | None:
@@ -123,7 +128,10 @@ def validate(data: dict[str, Any], by_id: dict[str, Any]) -> str | None:
     return None
 
 
-def build(cfg: Config, dep_map_path: Path, baseline_path: Path, use_ai: bool = True) -> dict[str, Any]:
+def build(cfg: Config, dep_map_path: Path, baseline_path: Path, use_ai: bool = True,
+          coverage: bool = False, fault_seconds: int | None = None) -> dict[str, Any]:
+    """coverage=True (mission mode): after the planner's own picks, add the highest-RPN failure of every fault type
+    not yet chosen, so each failure type is tested in priority order. Additions are labelled 'coverage'."""
     dep_map = read_json(dep_map_path) if dep_map_path.exists() else {}
     baseline = read_json(baseline_path) if baseline_path.exists() else None
     problems = []
@@ -184,6 +192,33 @@ def build(cfg: Config, dep_map_path: Path, baseline_path: Path, use_ai: bool = T
         r.update(component=c["target"], fault_type=c["fault_type"], failure_mode=FAULT_NAMES[c["fault_type"]],
                  measured=None)
     data["rows"].sort(key=lambda r: -r["rpn"])
+    source = "ai" if meta["method"].startswith("ai") else "rule-based"
+    for sel in data["selected"]:
+        sel.setdefault("source", source)
+    if coverage:
+        row_by = {r["candidate_id"]: r for r in data["rows"]}
+        covered = {by_id[x["candidate_id"]]["fault_type"] for x in data["selected"]}
+        extra = []
+        for ftype in FAULT_NAMES:
+            pool = [c for c in cands if c["fault_type"] == ftype]
+            if ftype in covered or not pool:
+                continue
+            for c in pool:  # rate anything the planner left unrated, with the documented rule-based scale
+                if c["candidate_id"] not in row_by:
+                    r = rule_based_row(cfg, c, nodes.get(c["target"], {}))
+                    r.update(rpn=r["severity"] * r["occurrence"] * r["detection"], component=c["target"],
+                             fault_type=ftype, failure_mode=FAULT_NAMES[ftype], measured=None)
+                    data["rows"].append(r)
+                    row_by[c["candidate_id"]] = r
+            extra.append(max((row_by[c["candidate_id"]] for c in pool), key=lambda r: r["rpn"]))
+        n = len(data["selected"])
+        for i, r in enumerate(sorted(extra, key=lambda r: -r["rpn"])):
+            data["selected"].append({"candidate_id": r["candidate_id"], "rank": n + i + 1, "source": "coverage",
+                                     "reason": f"coverage: highest-risk {r['failure_mode']} failure (RPN {r['rpn']}), "
+                                               "so every failure type is tested",
+                                     "hypothesis": f"{r['effect']}; other journeys stay within baseline; service "
+                                                   f"recovers within {cfg.recovery['timeout_s']} s of rollback"})
+        data["rows"].sort(key=lambda r: -r["rpn"])
     experiments = []
     for s in sorted(data["selected"], key=lambda s: s["rank"]):
         c = by_id[s["candidate_id"]]
@@ -191,6 +226,10 @@ def build(cfg: Config, dep_map_path: Path, baseline_path: Path, use_ai: bool = T
         exp["candidate_id"] = c["candidate_id"]
         exp["title"] = f"{FAULT_NAMES[c['fault_type']].capitalize()} of {c['target']} (FMEA rank {s['rank']})"
         exp["why"] = s["reason"]
+        exp["source"] = s.get("source")
+        if fault_seconds:  # shorter fault windows for a demo; still bounded by the safety limits below
+            for f in exp["faults"]:
+                f["duration_s"] = int(fault_seconds)
         if c["target"] in ("valkey-cart", "cart"):
             exp["checks"] = ["cart_durability"]  # does customer state survive this failure?
         safety.validate_experiment(cfg, exp)
@@ -257,8 +296,9 @@ def render_md(fmea: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run(cfg: Config, use_ai: bool = True) -> dict[str, Any]:
-    out = build(cfg, cfg.artifacts_dir / "dependency-map.json", cfg.artifacts_dir / "baseline.json", use_ai)
+def run(cfg: Config, use_ai: bool = True, coverage: bool = False, fault_seconds: int | None = None) -> dict[str, Any]:
+    out = build(cfg, cfg.artifacts_dir / "dependency-map.json", cfg.artifacts_dir / "baseline.json", use_ai, coverage,
+                fault_seconds)
     write_json(cfg.artifacts_dir / "fmea.json", out["fmea"])
     write_json(cfg.artifacts_dir / "experiment-plan.json", out["plan"])
     (cfg.root / "docs").mkdir(exist_ok=True)

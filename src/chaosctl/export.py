@@ -23,11 +23,30 @@ def _static(html: str, stamp: str) -> str:
                         f'<span class="pill">Snapshot · {stamp}</span>')
     html = re.sub(r"<script>\s*async function (pill|tick|lm)\(\).*?</script>", "", html, flags=re.DOTALL)
     html = re.sub(r'<form method="post" action="/api/kill".*?</form>', "", html, flags=re.DOTALL)
+    html = re.sub(r'<form class="start".*?</form>', "", html, flags=re.DOTALL)
     html = re.sub(r"""href=(["'])/runs/([A-Za-z0-9._-]+)/\1""", r'href="run-\2.html"', html)
     html = re.sub(r"""href=(["'])/compare/([A-Za-z0-9._-]+)\1""", r'href="\2.html"', html)
-    pages_map = {"/map": "map", "/baseline": "baseline", "/fmea": "fmea", "/live": "live", "/runs": "runs", "/": "index"}
+    pages_map = {"/map": "map", "/baseline": "baseline", "/fmea": "fmea", "/mission": "mission",
+                 "/runs": "runs", "/": "index"}
     return re.sub(r"""href=(["'])(/[a-z]*)\1""",
                   lambda m: f'href="{pages_map[m.group(2)]}.html"' if m.group(2) in pages_map else m.group(0), html)
+
+
+def mission_static(cfg: Config) -> str:
+    """Snapshot of the last mission: agents, results and fixes (the live page needs the running dashboard)."""
+    from . import agents
+    m = agents.current_mission(cfg) or {}
+    esc = htmlreport.esc
+    cards = "".join(f"<div class='card'><b>{esc(a['name'])}</b> · {esc(a['status'])}<br><span class='small muted'>"
+                    f"{esc(a['task'])}</span></div>" for a in (m.get("agents") or {}).values())
+    rows = "".join(f"<tr><td>{esc(r.get('priority'))}</td><td>{esc(r.get('title'))}</td>"
+                   f"<td>{esc(', '.join(r.get('impacted') or []) or 'none')}</td><td>{esc(r.get('severity'))}</td>"
+                   f"<td>{'✓ verified' if r.get('rollback_verified') else esc(r.get('rollback_verified'))}</td>"
+                   f"<td class='small'>{esc(r.get('remediation') or r.get('reason'))}</td></tr>" for r in m.get("results") or [])
+    body = (f"<h1>Agent mission</h1><p class='lead'>Mission {esc(m.get('mission_id'))} · {esc(m.get('status'))}</p>"
+            f"<div class='grid'>{cards}</div><h2>Test results</h2><div class='card wrap'><table><tr><th>P</th><th>Test</th>"
+            f"<th>Customers affected</th><th>Severity</th><th>Undo</th><th>Remediation</th></tr>{rows}</table></div>")
+    return pages.page("Agent mission", body if m else "<h1>Agent mission</h1><p>No mission recorded.</p>", "/mission")
 
 
 def export(cfg: Config, out: Path) -> list[Path]:
@@ -51,9 +70,7 @@ def export(cfg: Config, out: Path) -> list[Path]:
     write("map.html", pages.map_html(cfg))
     write("baseline.html", pages.baseline_html(cfg))
     write("fmea.html", pages.fmea_html(cfg))
-    write("live.html", pages.page("Live test", "<h1>Live test</h1><p class='lead'>The live view needs the running "
-                                  "dashboard (<code>chaosctl dashboard</code>). In this snapshot, open a test from "
-                                  "<a href='/runs'>Results</a> to see how the failure spread and healed.</p>", "/live"))
+    write("mission.html", mission_static(cfg))
     write("runs.html", dashboard.index_html(cfg).replace(dashboard.live_panel(), ""))
     for d in sorted(cfg.runs_dir.glob("*")) if cfg.runs_dir.exists() else []:
         if not (d / "analysis.json").exists():

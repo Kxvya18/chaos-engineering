@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -21,6 +22,29 @@ from .util import EventLog, JsonlWriter, now, read_jsonl, sha256_file, stamp, wr
 
 class RunAborted(Exception):
     pass
+
+
+@dataclass
+class RunSession:
+    """Everything one experiment run holds between its phases."""
+    run_id: str
+    run_dir: Path
+    experiment: dict[str, Any]
+    events: Any = None
+    writer: Any = None
+    probes: Any = None
+    hb: Any = None
+    hb_stop: Any = None
+    watchdog: Any = None
+    old_handlers: dict[Any, Any] = field(default_factory=dict)
+    injected: list[dict[str, Any]] = field(default_factory=list)
+    rollbacks: list[dict[str, Any]] = field(default_factory=list)
+    outcome: dict[str, Any] = field(default_factory=lambda: {"status": "started"})
+    closed: bool = False
+
+    @property
+    def targets(self) -> list[str]:
+        return [f["target"] for f in self.experiment["faults"] if f["fault_type"] != "traffic-spike"]
 
 
 def spawn_watchdog_process(cfg_path: Path, run_dir: Path) -> subprocess.Popen:
@@ -108,7 +132,25 @@ class Orchestrator:
             stop.wait(1.0)
 
     # -- main ---------------------------------------------------------------------
+    # The lifecycle is split into phases so the multi-agent mission (agents.py) can hand each phase to a different
+    # agent: open + steady (Safety Officer) -> inject_and_hold (Chaos Injector) -> close (Recovery) -> post (Analyst).
+    # run() composes the same phases with try/finally, so a fault is ALWAYS rolled back by close().
     def run(self, experiment: dict[str, Any], plan_ref: dict[str, Any] | None = None) -> Path:
+        s = self.open(experiment, plan_ref)
+        try:
+            if self.steady(s):
+                self.inject_and_hold(s)
+        except RunAborted as exc:
+            s.outcome = {"status": str(exc)}
+        except safety.SafetyError as exc:
+            s.outcome = {"status": "safety_error", "error": str(exc)}
+        finally:
+            self.close(s)
+            self.post(s)
+        return s.run_dir
+
+    def open(self, experiment: dict[str, Any], plan_ref: dict[str, Any] | None = None) -> RunSession:
+        """Pre-flight: validate, reconcile leftovers, verify target identity, create the run record."""
         cfg = self.cfg
         safety.validate_experiment(cfg, experiment)
         if safety.kill_engaged(cfg):
@@ -129,132 +171,142 @@ class Orchestrator:
             "config_sha256": sha256_file(cfg_file) if cfg_file else None,
             "safety": {"watchdog": cfg.watchdog, "recovery": cfg.recovery, "steady_state": cfg.steady_state},
         })
-        events = EventLog(run_dir / "events.jsonl", "orchestrator")
-        writer = JsonlWriter(run_dir / "metrics.jsonl")
-        probes = ProbeRunner(self.journeys, writer, cfg.probes["interval_s"], clock=self.clock)
-        hb_stop = threading.Event()
-        hb = threading.Thread(target=self._heartbeat, args=(run_dir, hb_stop), daemon=True)
-        old_handlers = {}
+        s = RunSession(run_id=run_id, run_dir=run_dir, experiment=experiment)
+        s.events = EventLog(run_dir / "events.jsonl", "orchestrator")
+        s.writer = JsonlWriter(run_dir / "metrics.jsonl")
+        s.probes = ProbeRunner(self.journeys, s.writer, cfg.probes["interval_s"], clock=self.clock)
+        s.hb_stop = threading.Event()
+        s.hb = threading.Thread(target=self._heartbeat, args=(run_dir, s.hb_stop), daemon=True)
         if threading.current_thread() is threading.main_thread():
             for sig in (signal.SIGINT, signal.SIGTERM):
-                old_handlers[sig] = signal.signal(sig, lambda *_: self._interrupted.set())
+                s.old_handlers[sig] = signal.signal(sig, lambda *_: self._interrupted.set())
+        return s
 
-        outcome: dict[str, Any] = {"status": "started"}
-        injected: list[dict[str, Any]] = []
-        watchdog = None
-        try:
-            hb.start()
-            probes.start()
-            watchdog = self.watchdog_starter(run_dir)
-            if not self._watchdog_ready(run_dir):
-                raise RunAborted("watchdog_not_running")  # never inject without the independent safety guard
-            events.emit("watchdog_ready")
-            events.emit("pre_start", seconds=cfg.steady_state["pre_s"])
-            t_pre = self.clock()
-            targets = [f["target"] for f in experiment["faults"] if f["fault_type"] != "traffic-spike"]
-            reason = self._wait(run_dir, cfg.steady_state["pre_s"],
-                                lambda: self._status_line(run_dir, "steady", t_pre, targets, None))
-            if reason:
-                raise RunAborted(reason)
-            pre = metrics.between(read_jsonl(run_dir / "metrics.jsonl"), t_pre, self.clock())
-            ok, detail = safety.steady_state_ok(pre, self.baseline, cfg)
-            events.emit("steady_state_check", ok=ok, **detail)
-            if not ok:
-                outcome = {"status": "steady_state_not_met", **detail}
-                return run_dir
+    def steady(self, s: RunSession) -> bool:
+        """Start probes and the independent watchdog, then require the steady state before any fault."""
+        cfg, run_dir, events = self.cfg, s.run_dir, s.events
+        s.hb.start()
+        s.probes.start()
+        s.watchdog = self.watchdog_starter(run_dir)
+        if not self._watchdog_ready(run_dir):
+            raise RunAborted("watchdog_not_running")  # never inject without the independent safety guard
+        events.emit("watchdog_ready")
+        events.emit("pre_start", seconds=cfg.steady_state["pre_s"])
+        t_pre = self.clock()
+        reason = self._wait(run_dir, cfg.steady_state["pre_s"],
+                            lambda: self._status_line(run_dir, "steady", t_pre, s.targets, None))
+        if reason:
+            raise RunAborted(reason)
+        pre = metrics.between(read_jsonl(run_dir / "metrics.jsonl"), t_pre, self.clock())
+        ok, detail = safety.steady_state_ok(pre, self.baseline, cfg)
+        events.emit("steady_state_check", ok=ok, **detail)
+        if not ok:
+            s.outcome = {"status": "steady_state_not_met", **detail}
+        return ok
 
-            if "cart_durability" in experiment.get("checks", []):
-                seeds = checks.cart_seed(cfg, self.ctx.http)
-                events.emit("check_seed", check="cart_durability", seeds=seeds)
-                self.progress(f"seeded {sum(s['seeded'] for s in seeds)}/{len(seeds)} sentinel carts before the fault")
-            duration = max(f["duration_s"] for f in experiment["faults"])
-            for i, f in enumerate(experiment["faults"]):
-                t = self.clock()
-                entry = {"fault_id": f"{run_id}-f{i}", "run_id": run_id, "fault_type": f["fault_type"],
-                         "target": f["target"], "params": f.get("params") or {}, "duration_s": f["duration_s"],
-                         "injected_at": t, "expires_at": t + f["duration_s"], "state": {}}
-                entry["desired"] = faults.snapshot(self.ctx, entry)  # the healthy state rollback must restore
-                self.registry.add(entry)  # registered BEFORE inject: a crash mid-inject is still rolled back
-                events.emit("inject_start", fault=entry, target_state=self.ctx.docker.state(f["target"])
-                            if f["fault_type"] != "traffic-spike" else None)
-                try:
-                    entry["state"] = faults.inject(self.ctx, entry)
-                    self.registry.update(entry["fault_id"], state=entry["state"])
-                    injected.append(entry)
-                    events.emit("inject_ok", fault_id=entry["fault_id"], state=entry["state"])
-                    self.progress(f">>> INJECTED {f['fault_type']} on {f['target']} {f.get('params') or ''}")
-                except Exception as exc:
-                    events.emit("inject_failed", fault_id=entry["fault_id"], error=str(exc))
-                    injected.append(entry)
-                    raise RunAborted(f"inject_failed: {exc}") from exc
-
-            t_inj = self.clock()
-            reason = self._wait(run_dir, duration, lambda: self._status_line(run_dir, "FAULT", t_inj, targets, events))
-            outcome = {"status": "completed" if reason is None else reason}
-        except RunAborted as exc:
-            outcome = {"status": str(exc)}
-        except safety.SafetyError as exc:
-            outcome = {"status": "safety_error", "error": str(exc)}
-        finally:
-            for entry in reversed(injected):
-                res = faults.rollback_verified(self.ctx, entry)
-                events.emit("rollback", fault_id=entry["fault_id"], result=res)
-                self.progress(f"rollback {'VERIFIED' if res.get('verified') else 'NOT VERIFIED'} after "
-                              f"{res.get('attempts')} attempt(s): " + "; ".join(
-                                  f"{c['check']}={'ok' if c['ok'] else 'FAIL'}" for c in res["history"][-1]["checks"]))
-                if res["ok"]:
-                    self.registry.remove(entry["fault_id"])
-            # anything the watchdog or a crash left behind for this run
-            for entry in self.registry.list(run_id):
-                res = faults.rollback(self.ctx, entry)
-                events.emit("rollback", fault_id=entry["fault_id"], result=res, late=True)
-                if res["ok"]:
-                    self.registry.remove(entry["fault_id"])
-            rollback_ts = self.clock()
-            events.emit("rollback_complete", remaining=len(self.registry.list(run_id)))
-            if injected:
-                self.progress(f"<<< ROLLED BACK ({outcome.get('status')}); watching recovery")
-                self._observe_recovery(run_dir, rollback_ts, events,
-                                       [f["target"] for f in experiment["faults"] if f["fault_type"] != "traffic-spike"])
-                seed_ev = next((e for e in read_jsonl(run_dir / "events.jsonl") if e["action"] == "check_seed"), None)
-                if seed_ev:
-                    res = checks.cart_verify(cfg, self.ctx.http, seed_ev["seeds"])
-                    events.emit("check_result", **res)
-                    self.progress(f"cart durability: {res['intact']}/{res['seeded']} sentinel carts intact, "
-                                  f"{res['lost']} lost")
-            (run_dir / "DONE").write_text(f"{self.clock()}")
-            probes.stop()
-            writer.close()
-            hb_stop.set()
-            if watchdog is not None and hasattr(watchdog, "wait"):
-                try:
-                    watchdog.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    watchdog.terminate()
-            elif watchdog is not None and hasattr(watchdog, "join"):
-                watchdog.join(timeout=30)
-            for sig, h in old_handlers.items():
-                signal.signal(sig, h)
-            events.emit("run_end", outcome=outcome)
-            events.close()
-            write_json(run_dir / "outcome.json", outcome)
+    def inject_and_hold(self, s: RunSession) -> None:
+        """Inject every fault (registered BEFORE injection) and hold it for its duration with live status."""
+        run_dir, events, experiment = s.run_dir, s.events, s.experiment
+        if "cart_durability" in experiment.get("checks", []):
+            seeds = checks.cart_seed(self.cfg, self.ctx.http)
+            events.emit("check_seed", check="cart_durability", seeds=seeds)
+            self.progress(f"seeded {sum(x['seeded'] for x in seeds)}/{len(seeds)} sentinel carts before the fault")
+        duration = max(f["duration_s"] for f in experiment["faults"])
+        for i, f in enumerate(experiment["faults"]):
+            t = self.clock()
+            entry = {"fault_id": f"{s.run_id}-f{i}", "run_id": s.run_id, "fault_type": f["fault_type"],
+                     "target": f["target"], "params": f.get("params") or {}, "duration_s": f["duration_s"],
+                     "injected_at": t, "expires_at": t + f["duration_s"], "state": {}}
+            entry["desired"] = faults.snapshot(self.ctx, entry)  # the healthy state rollback must restore
+            self.registry.add(entry)  # registered BEFORE inject: a crash mid-inject is still rolled back
+            events.emit("inject_start", fault=entry, target_state=self.ctx.docker.state(f["target"])
+                        if f["fault_type"] != "traffic-spike" else None)
             try:
-                analysis.analyze_run(cfg, run_dir)
-                if injected:
-                    self.progress("collecting evidence (Jaeger traces, container logs, compose facts) ...")
-                    evidence.collect(cfg, self.ctx, run_dir)
-                    if self.explain:
-                        self.progress("incident analysis (AI if enabled, else rule-based) ...")
-                        incident.explain(cfg, run_dir, use_ai=self.use_ai)
-                    row = fmea.update_from_run(cfg, run_dir, cfg.artifacts_dir / "fmea.json")
-                    if row:
-                        me = row["measured"]
-                        self.progress(f"FMEA {row['component']} / {row['failure_mode']}: predicted S{row['severity']} "
-                                      f"D{row['detection']} RPN {row['rpn']}  ->  measured S{me['severity']} "
-                                      f"D{me['detection']} RPN {me['rpn']}")
-            except Exception as exc:  # never mask the run outcome; re-run `chaosctl analyze/explain` later
-                (run_dir / "analysis_error.txt").write_text(f"{type(exc).__name__}: {exc}\n")
-        return run_dir
+                entry["state"] = faults.inject(self.ctx, entry)
+                self.registry.update(entry["fault_id"], state=entry["state"])
+                s.injected.append(entry)
+                events.emit("inject_ok", fault_id=entry["fault_id"], state=entry["state"])
+                self.progress(f">>> INJECTED {f['fault_type']} on {f['target']} {f.get('params') or ''}")
+            except Exception as exc:
+                events.emit("inject_failed", fault_id=entry["fault_id"], error=str(exc))
+                s.injected.append(entry)
+                raise RunAborted(f"inject_failed: {exc}") from exc
+        t_inj = self.clock()
+        reason = self._wait(run_dir, duration, lambda: self._status_line(run_dir, "FAULT", t_inj, s.targets, events))
+        s.outcome = {"status": "completed" if reason is None else reason}
+
+    def close(self, s: RunSession) -> list[dict[str, Any]]:
+        """Verified rollback of every injected fault, leftovers, recovery watch, durability check, run teardown.
+        Idempotent: safe to call twice (the mission's safety net calls it again on any error)."""
+        if s.closed:
+            return s.rollbacks
+        s.closed = True
+        run_dir, events = s.run_dir, s.events
+        for entry in reversed(s.injected):
+            res = faults.rollback_verified(self.ctx, entry)
+            s.rollbacks.append({"fault_id": entry["fault_id"], **res})
+            events.emit("rollback", fault_id=entry["fault_id"], result=res)
+            self.progress(f"rollback {'VERIFIED' if res.get('verified') else 'NOT VERIFIED'} after "
+                          f"{res.get('attempts')} attempt(s): " + "; ".join(
+                              f"{c['check']}={'ok' if c['ok'] else 'FAIL'}" for c in res["history"][-1]["checks"]))
+            if res["ok"]:
+                self.registry.remove(entry["fault_id"])
+        for entry in self.registry.list(s.run_id):  # anything the watchdog or a crash left behind for this run
+            res = faults.rollback(self.ctx, entry)
+            events.emit("rollback", fault_id=entry["fault_id"], result=res, late=True)
+            if res["ok"]:
+                self.registry.remove(entry["fault_id"])
+        rollback_ts = self.clock()
+        events.emit("rollback_complete", remaining=len(self.registry.list(s.run_id)))
+        if s.injected:
+            self.progress(f"<<< ROLLED BACK ({s.outcome.get('status')}); watching recovery")
+            self._observe_recovery(run_dir, rollback_ts, events, s.targets)
+            seed_ev = next((e for e in read_jsonl(run_dir / "events.jsonl") if e["action"] == "check_seed"), None)
+            if seed_ev:
+                res = checks.cart_verify(self.cfg, self.ctx.http, seed_ev["seeds"])
+                events.emit("check_result", **res)
+                self.progress(f"cart durability: {res['intact']}/{res['seeded']} sentinel carts intact, "
+                              f"{res['lost']} lost")
+        (run_dir / "DONE").write_text(f"{self.clock()}")
+        s.probes.stop()
+        s.writer.close()
+        s.hb_stop.set()
+        if s.watchdog is not None and hasattr(s.watchdog, "wait"):
+            try:
+                s.watchdog.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                s.watchdog.terminate()
+        elif s.watchdog is not None and hasattr(s.watchdog, "join"):
+            s.watchdog.join(timeout=30)
+        for sig, h in s.old_handlers.items():
+            signal.signal(sig, h)
+        events.emit("run_end", outcome=s.outcome)
+        events.close()
+        write_json(run_dir / "outcome.json", s.outcome)
+        return s.rollbacks
+
+    def post(self, s: RunSession, explain: bool | None = None) -> dict[str, Any] | None:
+        """Analysis, evidence, incident explanation (AI if enabled) and the measured FMEA update."""
+        cfg, run_dir = self.cfg, s.run_dir
+        try:
+            analysis.analyze_run(cfg, run_dir)
+            if not s.injected:
+                return None
+            self.progress("collecting evidence (Jaeger traces, container logs, compose facts) ...")
+            evidence.collect(cfg, self.ctx, run_dir)
+            if self.explain if explain is None else explain:
+                self.progress("incident analysis (AI if enabled, else rule-based) ...")
+                incident.explain(cfg, run_dir, use_ai=self.use_ai)
+            row = fmea.update_from_run(cfg, run_dir, cfg.artifacts_dir / "fmea.json")
+            if row:
+                me = row["measured"]
+                self.progress(f"FMEA {row['component']} / {row['failure_mode']}: predicted S{row['severity']} "
+                              f"D{row['detection']} RPN {row['rpn']}  ->  measured S{me['severity']} "
+                              f"D{me['detection']} RPN {me['rpn']}")
+            return row
+        except Exception as exc:  # never mask the run outcome; re-run `chaosctl analyze/explain` later
+            (run_dir / "analysis_error.txt").write_text(f"{type(exc).__name__}: {exc}\n")
+            return None
 
     def _observe_recovery(self, run_dir: Path, rollback_ts: float, events: EventLog, targets: list[str]) -> None:
         rec = self.cfg.recovery
