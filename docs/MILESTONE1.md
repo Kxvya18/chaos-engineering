@@ -16,7 +16,7 @@ Paste one line at a time. zsh does not treat `#` as a comment by default.
 | 3 | Monitoring baseline | Normal **error rate, latency and health** captured under steady load | `chaosctl baseline --duration 300` (plus 15 s warm-up, excluded) | A table per journey (samples, error rate, p50/p95/p99, req/s) and container **health at start and end**. Every quality check `[PASS]`, ending in **STEADY STATE ACCEPTED** | `artifacts/baseline.json`, `runs/*-baseline/` |
 | 4 | First failure injection | At least one failure (e.g. **container crash** or **network delay**) triggered and observed | `chaosctl autopilot --max 2` | 1) The **AI writes an FMEA**: every injectable failure mode with predicted Severity/Occurrence/Detection and RPN. 2) It **selects** the riskiest/most informative failures, with a reason and a hypothesis for each. 3) After you confirm, the engine injects each one safely, with live lines every 2 s. 4) For each: impact, time to restore, **health-check blind spot**, and where/how/why with industry-pattern fixes. 5) The FMEA row is updated with **measured** S/D/RPN | `artifacts/fmea.json`, `docs/FMEA.md`, `runs/<id>/` (incident.md) |
 | 5 | Safety controls | **Automatic stop or rollback on threshold breach**, tested at least once | `run --tripwire`, then a live run stopped with `chaosctl kill` | Tripwire: `abort=A1_blast_radius_…` with the fault rolled back by itself. Kill switch: the run ends `kill_switch` and `status` shows `active_faults: []` | `runs/<id>-TRIPWIRE-…/ABORT.json`, `events.jsonl` |
-| 6 | Day-1 checkpoint | Short demo: app running, one safe failure injected, impact visible | `chaosctl dashboard` | http://127.0.0.1:8090 opens on the **Day-1 checklist**, each row ✓/✕ computed from evidence, plus `/map`, `/baseline` and `/runs`. The run page shows the hypothesis, KPIs, the blast-radius table and per-journey charts with the fault window | screen recording |
+| 6 | Day-1 checkpoint | Short demo: app running, one safe failure injected, impact visible | `chaosctl dashboard` | http://127.0.0.1:8090 opens on the **Overview**: key findings and the Day-1 checkpoint (each row ✓/✕ computed from evidence). Numbered tabs: System map → Normal behaviour → AI test plan → Live test → Results. A result page shows the expectation, KPIs, where/how/why, fixes, the journeys hit and the verified undo | screen recording |
 
 **Day-1 minimum (slide):** a running app (1), a dependency map (2), and one safe failure injection (4) with a working kill
 switch (5). All are covered, and the baseline (3) is required before any injection.
@@ -34,6 +34,7 @@ switch (5). All are covered, and the baseline (3) is required before any injecti
 | Incident analysis of a run (AI if `ANTHROPIC_API_KEY` is set, otherwise rule-based) | `chaosctl explain runs/<id>` |
 | Apply the persistence fix, re-run S1, compare before/after | `scripts/m1.sh fix` |
 | Dashboard as a container on the demo network | `docker compose -f deploy/compose.chaosctl.yaml up -d --build` |
+| Static snapshot of the website for sharing (real run data only) | `chaosctl export-site --out site` |
 
 ## Why this order is safe
 In step 4 the watchdog is already active: abort rules A1–A6, the time limit on each fault, and the dead-man's switch.

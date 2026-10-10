@@ -1,6 +1,6 @@
 # FMEA — AI-generated, chaos-validated
 
-Generated 2026-10-10T09:21:25+00:00 · method: rule-based · AI not used: AI not requested (--no-ai)
+Generated 2026-10-10T09:29:35+00:00 · method: rule-based · AI not used: AI not requested (--no-ai)
 
 Scales (1 best … 10 worst): **severity** 1 = no customer-visible effect ... 5 = a low-value journey degraded ... 8 = cart or checkout fails ... 10 = checkout fails or customer data is lost; **occurrence** 1 = practically impossible in production ... 5 = plausible a few times per year ... 10 = expected often (e.g. tight memory limit, single instance, no restart); **detection** 1 = existing health checks/alerts certainly detect it before customers notice ... 10 = current monitoring cannot detect it (customers notice first)
 
@@ -22,9 +22,9 @@ Scales (1 best … 10 worst): **severity** 1 = no customer-visible effect ... 5 
 
 ## Selected for injection (by the planner)
 
-1. `network-delay:valkey-cart` — highest rule-based RPN for network-delay  
+1. `network-delay:valkey-cart` — highest risk score among network-delay failures (rule-based fallback)  
    Hypothesis: slow network of valkey-cart degrades cart, checkout; other journeys stay within baseline; service recovers within 10 s of rollback
-2. `cpu-throttle:checkout` — highest rule-based RPN for cpu-throttle  
+2. `cpu-throttle:checkout` — highest risk score among cpu-throttle failures (rule-based fallback)  
    Hypothesis: CPU starvation of checkout degrades checkout; other journeys stay within baseline; service recovers within 10 s of rollback
-3. `container-stop:cart` — highest rule-based RPN for container-stop  
+3. `container-stop:cart` — highest risk score among container-stop failures (rule-based fallback)  
    Hypothesis: crash / unavailable of cart degrades cart, checkout; other journeys stay within baseline; service recovers within 10 s of rollback

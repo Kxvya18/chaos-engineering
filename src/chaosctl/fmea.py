@@ -173,7 +173,8 @@ def build(cfg: Config, dep_map_path: Path, baseline_path: Path, use_ai: bool = T
                 targets.add(c["target"])
         data = {"rows": rows[:12] + [r for r in chosen if r not in rows[:12]], "summary": "rule-based FMEA",
                 "selected": [{"candidate_id": r["candidate_id"], "rank": i + 1,
-                              "reason": f"highest rule-based RPN for {by_id[r['candidate_id']]['fault_type']}",
+                              "reason": f"highest risk score among {by_id[r['candidate_id']]['fault_type']} failures "
+                                        f"(rule-based fallback)",
                               "hypothesis": f"{r['effect']}; other journeys stay within baseline; service recovers "
                                             f"within {cfg.recovery['timeout_s']} s of rollback"}
                              for i, r in enumerate(chosen)]}

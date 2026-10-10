@@ -237,7 +237,7 @@ def rule_based(cfg: Config, run_dir: Path, items: list[dict[str, Any]]) -> dict[
 
 def explain(cfg: Config, run_dir: Path, use_ai: bool = True) -> dict[str, Any]:
     items = build_items(cfg, run_dir)
-    meta: dict[str, Any] = {"method": "rule-based"}
+    meta: dict[str, Any] = {"method": "rule-based", "ai_unavailable": "AI not requested (--no-ai)"}
     result = None
     if use_ai:
         try:

@@ -111,10 +111,15 @@ def _blind_html(a: dict[str, Any]) -> str:
     bs = a.get("health_blind_spot")
     if not bs or not bs.get("customer_impact_s"):
         return ""
-    return (f"<div class='card'><b>Health-check blind spot:</b> customers were impacted for <b>{bs['customer_impact_s']:.0f} s</b>; "
-            f"for <b>{bs['silent_impact_s']:.0f} s</b> of that, every container still reported healthy. Customers first failed at "
-            f"+{esc(bs['customers_first_failed_at_s'])} s; "
-            f"{('the platform first showed a problem at +' + esc(bs['platform_first_not_green_at_s']) + ' s') if bs['platform_first_not_green_at_s'] is not None else 'the platform never showed a problem'}."
+    plat = (f"The platform first noticed a problem at +{esc(bs['platform_first_not_green_at_s'])} s"
+            if bs["platform_first_not_green_at_s"] is not None else "The platform never noticed a problem")
+    if not bs.get("silent_impact_s"):
+        return (f"<div class='card'><span class='status ok'>✓ Health checks noticed it</span> Customers were affected for "
+                f"<b>{bs['customer_impact_s']:.0f} s</b> and the platform reported a problem during that time. {plat}."
+                f"<br><span class='small muted'>{esc(bs['method'])}</span></div>")
+    return (f"<div class='card'><span class='status warn'>● Hidden outage</span> Customers were affected for "
+            f"<b>{bs['customer_impact_s']:.0f} s</b>; for <b>{bs['silent_impact_s']:.0f} s</b> of that, every container health "
+            f"check still said OK. Customers first failed at +{esc(bs['customers_first_failed_at_s'])} s. {plat}."
             f"<br><span class='small muted'>{esc(bs['method'])}</span></div>")
 
 
@@ -134,15 +139,15 @@ def render_run(cfg, run_dir: Path) -> str:
     targets = {f["target"] for f in exp["faults"]}
     f0 = exp["faults"][0]
 
-    k = [("Outcome", a["outcome"]), ("Time to impact", f"{a['time_to_impact_s']} s" if a["time_to_impact_s"] is not None else "n/a"),
-         ("Time to restore", f"{a.get('time_to_restore_s')} s" if a.get("time_to_restore_s") is not None else "not restored"),
-         ("Self-healed", "yes" if any(a.get("self_healed", {}).values()) else "no"),
-         ("Severity", f"{a['severity']['label']} ({a['severity']['score']})")]
+    k = [(f"Severity ({a['severity']['label']})", f"{a['severity']['score']:.0f} / 100" if a["severity"]["score"] is not None else "n/a"),
+         ("Customers hit after", f"{a['time_to_impact_s']} s" if a["time_to_impact_s"] is not None else "not hit"),
+         ("Back to normal in", f"{a.get('time_to_restore_s')} s" if a.get("time_to_restore_s") is not None else "not restored"),
+         ("Healed by itself", "yes" if any(a.get("self_healed", {}).values()) else "no")]
     for c in a.get("checks", []):
-        k.append(("Carts lost", f"{c['lost']} of {c['seeded']}"))
+        k.append(("Saved carts lost", f"{c['lost']} of {c['seeded']}"))
     bs = a.get("health_blind_spot")
     if bs and bs["customer_impact_s"]:
-        k.append(("Impact invisible to health checks", f"{bs['silent_impact_s']:.0f} of {bs['customer_impact_s']:.0f} s"))
+        k.append(("Unnoticed by health checks", f"{bs['silent_impact_s']:.0f} of {bs['customer_impact_s']:.0f} s"))
     kpis = "".join(f'<div class="card kpi"><div class="v">{esc(v)}</div><div class="l">{esc(lbl)}</div></div>' for lbl, v in k)
 
     rows = []
@@ -162,13 +167,17 @@ def render_run(cfg, run_dir: Path) -> str:
                       f"<td>{esc(r['health'])}</td><td class='num'>{esc(r['restart_count'])}</td><td class='num'>{esc(r['exit_code'])}</td></tr>"
                       for r in a.get("target_timeline", []))
 
-    ai_html = "<p class='muted'>No incident analysis yet — run <code>chaosctl explain</code>.</p>"
+    ai_html = "<p class='muted'>Not analysed yet — run <code>chaosctl explain runs/&lt;id&gt;</code>.</p>"
     if inc:
         r, m = inc["analysis"], inc["meta"]
-        method = (f"AI · {esc(m['ai_meta'].get('model_served'))} · evidence &amp; pattern ids validated by code"
-                  + (f" · <span class='status warn'>⚠ unverified numbers: {esc(m['unverified_numbers'])}</span>"
-                     if m.get("unverified_numbers") else " · all numbers found in evidence")
-                  if m["method"] == "ai" else f"Rule-based fallback ({esc(m.get('ai_unavailable') or m.get('ai_rejected'))})")
+        cached = (m.get("ai_meta") or {}).get("cached")
+        method = (f"Analysed by AI ({esc(m['ai_meta'].get('model_served'))}{', last validated answer' if cached else ''}). "
+                  "Code checked that every cited evidence item and fix pattern exists"
+                  + (f" · <span class='status warn'>⚠ numbers not found in the evidence: {esc(m['unverified_numbers'])}</span>"
+                     if m.get("unverified_numbers") else "; every number appears in the evidence.")
+                  if m["method"] == "ai" else
+                  f"<span class='status warn'>● Rule-based analysis</span>, AI not used: "
+                  f"{esc(m.get('ai_unavailable') or m.get('ai_rejected') or 'reason not recorded')}.")
         factors = "".join(f"<li>{esc(c['factor'])} <span class='muted small'>({esc(', '.join(c['evidence_ids']))})</span></li>"
                           for c in r["why"]["contributing_factors"])
         fixes = "".join(
@@ -185,7 +194,7 @@ def render_run(cfg, run_dir: Path) -> str:
 <div class="card"><h3>Why</h3><p class="small"><b>{esc(r['why']['root_cause'])}</b></p><ul class="small">{factors}</ul></div>
 <div class="card"><h3>Customer impact &amp; detection gap</h3><p class="small">{esc(r['customer_impact'])}</p>
 <p class="small muted">{esc(r['detection_gap'])}</p></div></div>
-<h3>Recommended fixes (industry-standard patterns)</h3><div class="card wrap"><table><tr><th>Prio</th><th>Pattern</th><th>Change</th>
+<h2>Recommended fixes (industry-standard patterns)</h2><div class="card wrap"><table><tr><th>Prio</th><th>Pattern</th><th>Change</th>
 <th>Expected effect</th><th>Evidence</th><th>Refs</th></tr>{fixes}</table></div>
 <div class="card small"><b>Verification plan:</b> {esc(r['verification_plan'])}</div>"""
 
@@ -197,7 +206,7 @@ def render_run(cfg, run_dir: Path) -> str:
         logs = "".join(f"<h3>{esc(lg['container'])} — {esc(lg.get('error_lines'))} error-like lines</h3>"
                        f"<pre>{esc(chr(10).join((lg.get('first') or []) + (lg.get('last') or [])) or lg.get('error') or '(none)')}</pre>"
                        for lg in ev.get("logs", []))
-        ev_html = f"""<h2>Evidence collected after the run</h2>
+        ev_html = f"""
 <div class="card"><h3>Jaeger error traces ({esc(tr.get('error_traces'))} traces)</h3>
 <p class="small">Where failures originated (deepest errored span per trace): <b>{votes}</b></p>
 <div class="wrap"><table><tr><th>service :: operation</th><th>error spans</th></tr>{ops}</table></div>
@@ -211,25 +220,45 @@ def render_run(cfg, run_dir: Path) -> str:
                       f"<td class='num'>{esc(r['attempts'])}</td><td class='small'>"
                       + esc("; ".join(f"{c['check']}: expected {c['expected']}, got {c['actual']}" for c in (r.get('checks') or [])))
                       + "</td></tr>" for r in a.get("rollback", []))
-    rollback_html = (f"<h2>Rollback verification</h2><div class='card wrap'><table><tr><th>Fault</th><th>Result</th><th>Attempts</th>"
+    rollback_html = (f"<h3>Rollback checks</h3><div class='card wrap'><table><tr><th>Fault</th><th>Result</th><th>Attempts</th>"
                      f"<th>State checks against the pre-injection snapshot</th></tr>{rb_rows}</table></div>") if rb_rows else ""
+    rb = a.get("rollback") or []
+    rb_ok = bool(rb) and all(r.get("verified") for r in rb)
+    rb_line = (_status(rb_ok, "Undo verified: the system is back in its pre-test state", "Undo NOT verified — check the table below")
+               if rb else "")
+    impacted = ", ".join(a["impacted_journeys"]) or "no customer journey"
+    unexpected = a.get("unexpected_impacted_journeys") or []
+    summary = (f"<b>{esc(impacted)}</b> affected"
+               + (f" (outside the expected area: {esc(', '.join(unexpected))})" if unexpected else "")
+               + (f"; back to normal in <b>{esc(a.get('time_to_restore_s'))} s</b>." if a.get("time_to_restore_s") is not None
+                  else "; not back to normal within the watch window.")
+               + (f" Stopped early: {esc(a['abort']['reason'])}." if a.get("abort") else ""))
     from .ui import page as ui_page
-    return ui_page(f"Run {a['run_id']}", f"""<p class="small"><a href="/runs">← all runs</a></p>
+    from .ui import params
+    return ui_page(f"Result {a['run_id']}", f"""<p class="small"><a href="/runs">← all results</a></p>
 <h1>{esc(exp.get('title') or a['experiment_id'])}</h1>
-<p class="muted">{esc(f0['fault_type'])} on <b>{esc(f0['target'])}</b> {esc(f0.get('params') or '')} for {esc(f0['duration_s'])} s · run <code>{esc(a['run_id'])}</code></p>
-<div class="card small"><b>Pre-registered hypothesis:</b> {esc(exp.get('hypothesis'))}<br><b>Why this experiment:</b> {esc(exp.get('why') or exp.get('reason'))}</div>
+<p class="lead">Injected <b>{esc(f0['fault_type'])}</b> ({esc(params(f0.get('params')) or 'default')}) on <b>{esc(f0['target'])}</b> for
+{esc(f0['duration_s'])} s. {summary}</p>
+<div class="card small"><b>Expectation, written before the test:</b> {esc(exp.get('hypothesis'))}
+{('<br><b>Why this test:</b> ' + esc(exp.get('why') or exp.get('reason'))) if (exp.get('why') or exp.get('reason')) else ''}</div>
 <div class="kpis">{kpis}</div>
 {_blind_html(a)}
-<h2>AI incident analysis</h2>{ai_html}
-<h2>Blast radius: journeys and the services they pass through</h2>
-<div class="card wrap"><table><tr><th>Journey</th><th>Status</th><th>Service path (✕ = fault target)</th><th>Base err</th><th>Fault err</th><th>Base p95 ms</th><th>Fault p95 ms</th></tr>{''.join(rows)}</table></div>
-<h2>Customer journeys over time</h2><p class="small muted">Shaded = fault active (inject → rollback). Dashed lines = inject, rollback, abort (hover for time). 2 s buckets from raw probe samples.</p>
-<div class="grid">{charts_ok}</div><div class="grid">{charts_lat}</div>
-<h2>Target container timeline (state changes)</h2>
+<h2>Where, how and why it failed</h2>{ai_html}
+<h2>Which customer journeys were hit</h2>
+<div class="card wrap"><table><tr><th>Journey</th><th>Status</th><th>Services it passes through (✕ = broken on purpose)</th>
+<th>Errors normal</th><th>Errors during</th><th>p95 ms normal</th><th>p95 ms during</th></tr>{''.join(rows)}</table></div>
+<h2>Success rate over time</h2><p class="small muted">Shaded = fault active (injected → undone). Dashed lines mark inject, undo and
+any automatic stop (hover for time). 2 s buckets of real test requests.</p>
+<div class="grid">{charts_ok}</div>
+<details><summary>Latency over time</summary><div class="grid">{charts_lat}</div></details>
+<h2>Safety: undo verified</h2><div class="card">{rb_line or '<span class="muted">no fault was active</span>'}</div>
+<details><summary>Technical evidence (container timeline, traces, logs, rollback checks, raw files)</summary>
+<h3>Target container timeline</h3>
 <div class="card wrap"><table><tr><th>t (s from inject)</th><th>container</th><th>status</th><th>health</th><th>restarts</th><th>exit code</th></tr>{tl_rows}</table></div>
 {ev_html}
 {rollback_html}
-<h2>Raw evidence files</h2><p class="small">{files}</p>""", CSS, "/runs")
+<h3>Raw evidence files</h3><p class="small">{files} · run <code>{esc(a['run_id'])}</code> · outcome {esc(a['outcome'])}</p>
+</details>""", CSS, "/runs")
 
 
 def render_compare(c: dict[str, Any]) -> str:
@@ -237,8 +266,9 @@ def render_compare(c: dict[str, Any]) -> str:
     rows = "".join(f"<tr><td>{esc(k.replace('_', ' '))}</td><td>{esc(c['before'][k])}</td><td>{esc(c['after'][k])}</td></tr>" for k in keys)
     good = c["verdict"] == "improved"
     from .ui import page as ui_page
-    return ui_page("Before / after", f"""<p class="small"><a href="/runs">← all runs</a></p>
+    return ui_page("Before / after", f"""<p class="small"><a href="/runs">← all results</a></p>
 <h1>Before / after the fix — {esc(c['experiment_id'])}</h1>
+<p class="lead">The same experiment, run again after applying the recommended fix.</p>
 <div class="card">{_status(good, 'improved', c['verdict'])} · severity score change {esc(c['severity_delta'])}</div>
 <div class="card wrap"><table><tr><th>Metric</th><th><a href="/runs/{esc(c['before']['run_id'])}/">before</a></th>
 <th><a href="/runs/{esc(c['after']['run_id'])}/">after</a></th></tr>{rows}</table></div>""", CSS, "/runs")

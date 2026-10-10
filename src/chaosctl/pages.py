@@ -30,7 +30,6 @@ EXTRA_CSS = """
 .node.impacted rect{stroke:var(--serious);stroke-width:3;stroke-dasharray:none}
 .node.fault text,.node.down text{fill:var(--critical);font-weight:700}.node.impacted text{font-weight:700}.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;margin:6px 0}
 .sw{display:inline-block;width:26px;height:0;border-top:3px solid;vertical-align:middle;margin-right:6px}
-nav a{margin-right:14px}
 """
 
 
@@ -115,36 +114,74 @@ TICK, WARN, CROSS = ('<span class="status ok">✓</span>', '<span class="status 
                      '<span class="status bad">✕</span>')
 
 
+def _experiment(cfg: Config, run_id: str) -> dict[str, Any]:
+    p = cfg.runs_dir / run_id / "experiment.json"
+    return read_json(p)["experiment"] if p.exists() else {}
+
+
+def _top_fix(cfg: Config, run_id: str) -> dict[str, Any] | None:
+    p = cfg.runs_dir / run_id / "incident.json"
+    if not p.exists():
+        return None
+    fixes = sorted(read_json(p)["analysis"].get("fixes") or [], key=lambda f: f["priority"])
+    return fixes[0] if fixes else None
+
+
+def result_card(cfg: Config, a: dict[str, Any]) -> str:
+    """One experiment in plain words: what was broken, what customers felt, how fast it healed, the top fix."""
+    exp = _experiment(cfg, a["run_id"])
+    f0 = (exp.get("faults") or [{}])[0]
+    sev = a["severity"]
+    facts = [f"<span><b>Customers affected:</b> {esc(', '.join(a['impacted_journeys']) or 'none')}</span>",
+             f"<span><b>Back to normal in:</b> {esc(a.get('time_to_restore_s'))} s</span>"
+             if a.get("time_to_restore_s") is not None else "<span><b>Back to normal:</b> not within the watch window</span>",
+             f"<span><b>Severity:</b> {esc(sev['label'])} ({sev['score'] or 0:.0f}/100)</span>"]
+    for c in a.get("checks", []):
+        facts.append(f"<span><b>Saved carts lost:</b> {c['lost']} of {c['seeded']}</span>")
+    bs = a.get("health_blind_spot") or {}
+    if bs.get("silent_impact_s"):
+        facts.append(f"<span><b>Unnoticed by health checks:</b> {bs['silent_impact_s']:.0f} s</span>")
+    fix = _top_fix(cfg, a["run_id"])
+    fix_html = (f"<div class='fix'><b>Top fix:</b> {esc(fix['pattern_name'])} — {esc(fix['change'])}</div>" if fix else "")
+    return (f"<div class='card result sev-{esc(sev['label'])}'><h3>{esc(exp.get('title') or a['experiment_id'])}</h3>"
+            f"<div class='small muted'>Injected: {esc(f0.get('fault_type'))} on <b>{esc(f0.get('target'))}</b>"
+            f"{' · chosen by the AI test plan' if exp.get('candidate_id') else ''}</div>"
+            f"<div class='facts'>{''.join(facts)}</div>{fix_html}"
+            f"<p class='small'><a href='/runs/{esc(a['run_id'])}/'>Full result: where, how, why →</a></p></div>")
+
+
+def experiments(cfg: Config) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(failure experiments, safety tests) from analysed runs, newest first."""
+    runs = [a for a in _runs(cfg) if a["timeline"].get("inject")]
+    safety_runs = [a for a in runs if a["experiment_id"].startswith("TRIPWIRE") or a["outcome"] == "kill_switch"]
+    return [a for a in runs if a not in safety_runs], safety_runs
+
+
 def home_html(cfg: Config, rows: list[dict]) -> str:
-    bp, fp = cfg.artifacts_dir / "baseline.json", cfg.artifacts_dir / "fmea.json"
-    steady = read_json(bp).get("quality", {}).get("pass") if bp.exists() else None
-    fm = read_json(fp)["meta"] if fp.exists() else None
-    tiles = [("System", OK_DONE.replace("done", "running") if rows[0]["ok"] else OPEN.replace("open", "needs attention")),
-             ("Steady state", (OK_DONE.replace("done", "accepted") if steady else OPEN.replace("open", "rejected"))
-              if steady is not None else "<span class='muted'>not measured</span>"),
-             ("Failures chosen by", ("AI · " + esc((fm.get("ai_meta") or {}).get("model_served")) if fm and fm["method"].startswith("ai")
-                                     else "rule-based fallback" if fm else "<span class='muted'>not planned</span>")),
-             ("Milestone 1", f"{sum(r['ok'] for r in rows)} of {len(rows)} done")]
-    tiles_html = "".join(f'<div class="card kpi"><div class="v" style="font-size:18px">{v}</div><div class="l">{esc(k)}</div></div>'
-                         for k, v in tiles)
-    flow = [("1 Map", "who calls whom, verified by traces"), ("2 Baseline", "prove the system is healthy"),
-            ("3 AI FMEA", "AI rates failure modes, picks what to break"), ("4 Safe injection", "bounded, watched, verified rollback"),
-            ("5 Measure & explain", "impact, blind spot, where/how/why, fixes")]
-    flow_html = "".join(f'<div class="card"><b>{esc(a)}</b><span class="k">{esc(b)}</span></div>' for a, b in flow)
-    return f"""<div class="hero"><h1>AI-driven chaos engineering for cloud-native resilience</h1>
-<p>An AI rates how each part of a live microservice shop can fail (FMEA), chooses what to break, and a safety-first engine
-injects it, measures what customers really experienced, and rolls back with proof.</p></div>
-<div class="kpis">{tiles_html}</div><h2>How it works</h2><div class="flow">{flow_html}</div>{checklist_html(rows)}"""
+    failures, _ = experiments(cfg)
+    latest: dict[str, dict[str, Any]] = {}
+    for a in failures:  # newest run per experiment, most severe first
+        latest.setdefault(a["experiment_id"], a)
+    top = sorted(latest.values(), key=lambda a: -(a["severity"]["score"] or 0))[:2]
+    results = ("".join(result_card(cfg, a) for a in top) if top else
+               "<div class='card muted'>No failure tested yet. Follow the steps above; results appear here.</div>")
+    done = sum(r["ok"] for r in rows)
+    return f"""<h1>How resilient is the Astronomy Shop?</h1>
+<p class="lead">An AI studies a live microservice shop, decides which failures are most worth testing, and a safety engine
+injects them one at a time. We measure what customers actually experienced, explain where, how and why it failed,
+and recommend fixes. Every failure is undone automatically and the undo is verified.</p>
+<h2>Key findings</h2>{results}
+<h2>Day-1 checkpoint · {done} of {len(rows)} complete</h2>{checklist_html(rows)}"""
 
 
 def checklist_html(rows: list[dict]) -> str:
-    trs = "".join(
-        f"<tr><td>{esc(r['n'])}</td><td><b>{esc(r['milestone'])}</b><br><span class='small muted'>{esc(r['expected'])}</span></td>"
-        f"<td>{OK_DONE if r['ok'] else OPEN}</td>"
-        f"<td class='small'>{esc(r['evidence'])}</td><td><a href='{esc(r['link'])}'>view</a></td></tr>" for r in rows)
-    return f"""<h2>Milestone 1 — Day-1 checkpoint</h2><p class="muted small">Every row is computed from evidence files and live
-container state; nothing is entered by hand.</p><div class="card wrap"><table><tr><th>#</th><th>Milestone</th><th>Status</th>
-<th>Evidence</th><th></th></tr>{trs}</table></div>"""
+    items = "".join(
+        f"<div class='check'><span class='s'>{TICK if r['ok'] else CROSS}</span><div><b>{esc(r['milestone'])}</b> "
+        f"<span class='small muted'>— {esc(r['expected'])}</span></div>"
+        f"<a class='small' href='{esc(r['link'])}'>{'view' if r['ok'] else 'open'} →</a>"
+        f"<div class='e'>{OK_DONE if r['ok'] else OPEN} · {esc(r['evidence'])}</div></div>" for r in rows)
+    return f"""<div class="card">{items}</div><p class="small muted">Each row is computed from recorded evidence and the
+live container state; nothing is ticked by hand.</p>"""
 
 
 # ---------------------------------------------------------------- map
@@ -190,7 +227,7 @@ def map_svg(m: dict[str, Any], overlay: dict[str, str] | None = None) -> str:
         off = (height - len(ly) * (bh + gy)) / 2
         for j, n in enumerate(ly):
             pos[n] = (x, off + j * (bh + gy))
-    parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="dependency map">',
+    parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" style="max-width:{width * 1.3:.0f}px" role="img" aria-label="dependency map">',
              '<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">'
              '<path d="M0,0 L10,5 L0,10 z" fill="var(--text-muted)"/></marker></defs>']
     for e in edges:
@@ -217,41 +254,52 @@ def map_svg(m: dict[str, Any], overlay: dict[str, str] | None = None) -> str:
     return "".join(parts)
 
 
+GAP_LABELS = {
+    "no_healthcheck": ("No health check", "the platform cannot tell when these fail"),
+    "missing_depends_on": ("Datastore used without a declared dependency", "start-up order is not guaranteed"),
+    "static_only": ("In the configuration, not seen in live traffic", "unused, or the trace is missing"),
+    "runtime_only": ("Seen in live traffic, missing from the configuration", "an undocumented dependency"),
+}
+
+
 def map_html(cfg: Config) -> str:
     mp = cfg.artifacts_dir / "dependency-map.json"
     if not mp.exists():
-        return page("Dependency map", "<h1>Dependency map</h1><p>Not yet: run <code>chaosctl map</code>.</p>", "/map")
+        return page("System map", "<h1>System map</h1><p class='lead'>Not created yet. Run <code>chaosctl map</code>.</p>", "/map")
     m = read_json(mp)
     edges = [e for e in m["edges"] if not e.get("telemetry")]
+    names = {e["from"] for e in edges} | {e["to"] for e in edges}
+    confirmed = sum(1 for e in edges if e["status"] == "verified-static+runtime")
     legend = "".join(f'<span><span class="sw" style="border-color:{c}"></span>{esc(g)}</span>'
                      for g, c in dict(FLOW_GROUP.values()).items())
-    legend += ('<span><span class="sw" style="border-color:var(--text-muted)"></span>other / startup only</span>'
-               '<span>—— config + live traces</span><span>- - - config only</span><span>· · · traces / manual only</span>'
-               '<span>dashed box = datastore</span>')
+    legend += "<span>solid = confirmed by live traffic · dashed = configuration only</span><span>dashed box = database / store</span>"
+    gaps = "".join(f"<li><b>{esc(GAP_LABELS.get(k, (k, ''))[0])}</b> <span class='muted'>({esc(GAP_LABELS.get(k, ('', ''))[1])})</span>"
+                   f": {esc(', '.join(v))}</li>" for k, v in m["drift"].items() if v)
     rows = "".join(f"<tr><td>{esc(e['from'])}</td><td>{esc(e['to'])}</td><td>{esc(e.get('flow'))}</td><td>{esc(e['status'])}</td>"
                    f"<td class='small'>{esc('; '.join(x.get('ref') or x.get('type', '') for x in e['evidence']))}</td></tr>"
                    for e in edges)
-    d = m["drift"]
-    gaps = "".join(f"<li><b>{esc(k.replace('_', ' '))}:</b> {esc(', '.join(v) or 'none')}</li>" for k, v in d.items())
-    body = f"""<h1>Application map — services, dependencies, data flows</h1>
-<p class="muted small">Generated {esc(m['generated'])} from the compose configuration{' and live Jaeger traces' if m['sources']['runtime'] else ''}.
-Hover an arrow for details.</p><div class="legend">{legend}</div><div class="card wrap">{map_svg(m)}</div>
-<h2>Gaps found while mapping</h2><div class="card"><ul class="small">{gaps}</ul></div>
-<h2>All dependencies (table view)</h2><div class="card wrap"><table><tr><th>From</th><th>To</th><th>Data flow</th><th>Status</th>
-<th>Evidence</th></tr>{rows}</table></div>"""
-    return page("Dependency map", body, "/map")
+    body = f"""<h1>System map</h1>
+<p class="lead">{len(names)} services and {len(edges)} connections on the customer path; {confirmed} confirmed by both the
+configuration and live traffic. Arrows point from caller to the service it depends on.</p>
+<div class="legend">{legend}</div><div class="card wrap">{map_svg(m)}</div>
+<h2>Weak spots found while mapping</h2><div class="card"><ul class="small">{gaps or '<li>none</li>'}</ul></div>
+<details><summary>All connections with their evidence (table)</summary><div class="card wrap"><table><tr><th>From</th><th>To</th>
+<th>Connection</th><th>Status</th><th>Evidence</th></tr>{rows}</table>
+<p class="small muted">Generated {esc(m['generated'])} from the compose configuration{' and live Jaeger traces' if m['sources']['runtime'] else ''}.
+Monitoring, feature-flag and operator-UI links are excluded from the customer path.</p></div></details>"""
+    return page("System map", body, "/map")
 
 
 # ---------------------------------------------------------------- baseline
 def baseline_html(cfg: Config) -> str:
     bp = cfg.artifacts_dir / "baseline.json"
     if not bp.exists():
-        return page("Baseline", "<h1>Baseline</h1><p>Not yet: run <code>chaosctl baseline</code>.</p>", "/baseline")
+        return page("Normal behaviour", "<h1>Normal behaviour</h1><p class='lead'>Not measured yet. Run "
+                    "<code>chaosctl baseline</code>.</p>", "/baseline")
     b = read_json(bp)
     q = b.get("quality") or {"pass": None, "checks": []}
     rows = "".join(f"<tr><td>{esc(j)}</td><td class='num'>{s['n']}</td><td class='num'>{pct(s['error_rate'])}</td>"
-                   f"<td class='num'>{esc(s['p50_ms'])}</td><td class='num'>{esc(s['p95_ms'])}</td><td class='num'>{esc(s['p99_ms'])}</td>"
-                   f"<td class='num'>{esc(round(s['throughput_rps'], 2) if s['throughput_rps'] else None)}</td></tr>"
+                   f"<td class='num'>{esc(s['p50_ms'])}</td><td class='num'>{esc(s['p95_ms'])}</td></tr>"
                    for j, s in b["journeys"].items())
     checks = "".join(f"<li>{TICK if c['ok'] else WARN if c['ok'] is None else CROSS} "
                      f"<b>{esc(c['check'])}</b> — {esc(c['detail'])}</li>" for c in q["checks"])
@@ -269,23 +317,26 @@ def baseline_html(cfg: Config) -> str:
             charts = "".join(small_multiple(f"{j} — p95 latency ms", series(samples, j, t0, t1, 10.0), "p95",
                                             {"warm-up end": warm}, (0, warm) if warm else (None, None), None, " ms")
                              for j in b["journeys"])
-    verdict = ('<span class="status ok">✓ STEADY STATE ACCEPTED</span>' if q["pass"] else
-               '<span class="status bad">✕ STEADY STATE REJECTED</span>')
+    verdict = ('<span class="status ok">✓ Steady state accepted — safe to start testing</span>' if q["pass"] else
+               '<span class="status bad">✕ Steady state rejected — fix the app before testing</span>')
     o = b["overall"]
-    body = f"""<h1>Monitoring baseline — normal behaviour under steady load</h1>
-<p class="muted small">{esc(b['generated'])} · {b['duration_s']:.0f} s measured after {b.get('warmup_s', 0):.0f} s warm-up ·
-load: Locust {esc((b.get('load') or {}).get('state'))}, {esc((b.get('load') or {}).get('user_count'))} users · run <code>{esc(run_dir.name)}</code></p>
-<div class="card">{verdict}<ul class="small">{checks}</ul></div>
-<div class="kpis"><div class="card kpi"><div class="v">{o['n']}</div><div class="l">probe samples</div></div>
-<div class="card kpi"><div class="v">{pct(o['error_rate'])}</div><div class="l">error rate</div></div>
-<div class="card kpi"><div class="v">{o['p95_ms']:.0f} ms</div><div class="l">p95 latency (all journeys)</div></div></div>
-<h2>Per customer journey</h2><div class="card wrap"><table><tr><th>Journey</th><th>Samples</th><th>Error rate</th><th>p50 ms</th>
-<th>p95 ms</th><th>p99 ms</th><th>probe req/s</th></tr>{rows}</table></div>
-<h2>Latency over time (10 s buckets; shaded = warm-up, excluded)</h2><div class="grid">{charts}</div>
-<h2>Container health (start → end)</h2><div class="card wrap"><table><tr><th>Container</th><th>Start</th><th>End</th></tr>{hrows}</table></div>"""
-    return page("Baseline", body, "/baseline")
-
-
+    load = b.get("load") or {}
+    body = f"""<h1>Normal behaviour</h1>
+<p class="lead">Before breaking anything, we prove the shop is healthy: {b['duration_s']:.0f} s of test requests on every customer
+journey while simulated shoppers ({esc(load.get('user_count'))} users) keep the shop busy.</p>
+<div class="card">{verdict}</div>
+<div class="kpis"><div class="card kpi"><div class="v">{pct(o['error_rate'])}</div><div class="l">error rate</div></div>
+<div class="card kpi"><div class="v">{o['p95_ms']:.0f} ms</div><div class="l">slowest 5% of requests (p95)</div></div>
+<div class="card kpi"><div class="v">{o['n']}</div><div class="l">test requests measured</div></div></div>
+<h2>Per customer journey</h2><div class="card wrap"><table><tr><th>Journey</th><th>Requests</th><th>Error rate</th>
+<th>Typical ms (p50)</th><th>Slowest 5% ms (p95)</th></tr>{rows}</table></div>
+<details><summary>Quality checks behind the verdict</summary><div class="card"><ul class="small">{checks}</ul></div></details>
+<details><summary>Latency over time per journey</summary><p class="small muted">10 s buckets; shaded = warm-up, excluded.</p>
+<div class="grid">{charts}</div></details>
+<details><summary>Container health at start and end</summary><div class="card wrap"><table><tr><th>Container</th><th>Start</th>
+<th>End</th></tr>{hrows}</table></div></details>
+<p class="small muted">Measured {esc(b['generated'])} after {b.get('warmup_s', 0):.0f} s warm-up · run <code>{esc(run_dir.name)}</code></p>"""
+    return page("Normal behaviour", body, "/baseline")
 
 
 # ---------------------------------------------------------------- live blast radius
@@ -309,17 +360,20 @@ def live_fragment(cfg: Config, overlay: dict[str, str], journeys: dict[str, dict
     svg = map_svg(read_json(mp), overlay) if mp.exists() else "<p>Run <code>chaosctl map</code> first.</p>"
     tiles = "".join(
         f'<div class="card kpi"><div class="v">{v["ok"]}/{v["n"]}</div><div class="l">{esc(j)} '
-        f'{TICK + " OK" if v["ok"] == v["n"] else CROSS + " DOWN" if v["ok"] == 0 else WARN.replace("warn", "degraded")}</div></div>'
+        f'{TICK + " OK" if v["ok"] == v["n"] else CROSS + " down" if v["ok"] == 0 else WARN.replace("warn", "degraded")}</div></div>'
         for j, v in sorted(journeys.items()))
-    plat = ("n/a" if platform_green is None else
+    plat = ("unknown" if platform_green is None else
             '<span class="status ok">✓ all containers healthy</span>' if platform_green else
-            '<span class="status bad">✕ a container is down/unhealthy</span>')
+            '<span class="status bad">✕ a container is down or unhealthy</span>')
     blind = ""
     if platform_green and any(v["ok"] < v["n"] for v in journeys.values()):
-        blind = '<div class="card"><span class="status warn">● HEALTH-CHECK BLIND SPOT</span> customers are failing while every container reports healthy</div>'
-    return f"""<p class="small">{'Run <code>' + esc(run_id) + '</code>' if run_id else 'No run in progress'} · platform view: {plat}</p>
-{blind}<div class="kpis">{tiles}</div>
-<div class="legend"><span>✕ red border = fault target / container down</span><span>! orange border = on a failing customer journey</span></div>
+        blind = ('<div class="card"><span class="status warn">● Hidden outage</span> customers are failing while every '
+                 'container still reports healthy</div>')
+    head = (f"Test in progress (<code>{esc(run_id)}</code>)" if run_id else "No test running. Start one with "
+            "<code>chaosctl autopilot</code>; this page updates by itself.")
+    return f"""<p>{head} · Platform health checks: {plat}</p>{blind}
+{('<h3>Customer journeys, last 10 s (successful / total)</h3><div class="kpis">' + tiles + '</div>') if tiles else ''}
+<div class="legend"><span>✕ red border = broken on purpose / container down</span><span>! orange border = on a failing customer journey</span></div>
 <div class="card wrap">{svg}</div>"""
 
 
@@ -327,35 +381,51 @@ def live_fragment(cfg: Config, overlay: dict[str, str], journeys: dict[str, dict
 def fmea_html(cfg: Config) -> str:
     fp = cfg.artifacts_dir / "fmea.json"
     if not fp.exists():
-        return page("AI FMEA", "<h1>AI FMEA</h1><p>Not yet: run <code>chaosctl plan</code> or <code>chaosctl autopilot</code>.</p>", "/fmea")
+        return page("AI test plan", "<h1>AI test plan</h1><p class='lead'>Not created yet. Run <code>chaosctl autopilot</code> "
+                    "(or <code>chaosctl plan</code>).</p>", "/fmea")
     f = read_json(fp)
     m = f["meta"]
     if m["method"] == "ai":
-        who = f"AI · {esc(m['ai_meta'].get('model_served'))}"
+        who = f"Written by AI ({esc(m['ai_meta'].get('model_served'))}); every answer checked by code before use."
     elif m["method"] == "ai-cached":
-        who = f"AI (last validated answer, API unavailable: {esc(m['ai_meta'].get('cache_reason'))})"
+        who = (f"Last AI answer that passed validation (the AI service was unreachable: "
+               f"{esc(m['ai_meta'].get('cache_reason'))}).")
     else:
-        who = f"rule-based fallback ({esc(m.get('ai_unavailable') or m.get('ai_rejected') or 'reason not recorded')})"
+        who = (f"<span class='status warn'>● Rule-based fallback</span>, AI not used: "
+               f"{esc(m.get('ai_unavailable') or m.get('ai_rejected') or 'reason not recorded')}.")
+    rows_by_id = {r["candidate_id"]: r for r in f["rows"]}
+    cards = []
+    for s in sorted(f["selected"], key=lambda s: s["rank"]):
+        r = rows_by_id.get(s["candidate_id"], {})
+        cards.append(f"<div class='card result'><div class='small muted'>Test {esc(s['rank'])}</div>"
+                     f"<h3>{esc(r.get('failure_mode'))} · {esc(r.get('component'))}</h3>"
+                     f"<p class='small'><b>Why:</b> {esc(s['reason'])}</p><p class='small'><b>We expect:</b> {esc(s['hypothesis'])}</p>"
+                     f"<p class='small muted'>Risk score {esc(r.get('rpn'))} = severity {esc(r.get('severity'))} × "
+                     f"likelihood {esc(r.get('occurrence'))} × hard-to-detect {esc(r.get('detection'))}</p></div>")
     rows = []
     for r in f["rows"]:
         me = r.get("measured")
         if me:
             gap = me["rpn"] - r["rpn"]
-            verdict = (f"{CROSS} underestimated" if gap > 50 else f"{WARN} overestimated" if gap < -50 else f"{TICK} confirmed")
-            meas = f"<td class='num'>{me['severity']}</td><td class='num'>{me['detection']}</td><td class='num'><b>{me['rpn']}</b></td>" \
-                   f"<td>{verdict}<br><a class='small' href='/runs/{esc(me['run_id'])}/'>run</a></td>"
+            verdict = (f"{CROSS} worse than predicted" if gap > 50 else f"{WARN.replace('warn', 'better than predicted')}"
+                       if gap < -50 else f"{TICK} as predicted")
+            meas = (f"<td class='num'><b>{me['rpn']}</b></td><td style='white-space:nowrap'>{verdict} · "
+                    f"<a class='small' href='/runs/{esc(me['run_id'])}/'>result</a></td>")
         else:
-            meas = "<td class='num'>—</td><td class='num'>—</td><td class='num'>—</td><td class='small muted'>not injected</td>"
-        rows.append(f"<tr><td><b>{esc(r['component'])}</b></td><td>{esc(r['failure_mode'])}</td><td class='small'>{esc(r['effect'])}"
-                    f"<br><span class='muted'>{esc(r['rationale'])}</span></td><td class='num'>{r['severity']}</td>"
-                    f"<td class='num'>{r['occurrence']}</td><td class='num'>{r['detection']}</td><td class='num'><b>{r['rpn']}</b></td>{meas}</tr>")
-    sel = "".join(f"<li><b>{esc(s['candidate_id'])}</b> — {esc(s['reason'])}<br><span class='small muted'>Hypothesis: "
-                  f"{esc(s['hypothesis'])}</span></li>" for s in f["selected"])
-    body = f"""<h1>FMEA — AI-generated, validated by chaos experiments</h1>
-<p class="muted small">{who} · generated {esc(f['generated'])}. Predicted Severity, Occurrence and Detection (1 best … 10 worst),
-RPN = S×O×D. After each injection, Severity is re-rated from measured customer impact and Detection from the measured
-health-check blind spot (method: docs/SCORING.md). Occurrence can't be measured by one experiment.</p>
-<div class="card"><h3>What the AI chose to break first, and why</h3><ol class="small">{sel}</ol></div>
-<div class="card wrap"><table><tr><th>Component</th><th>Failure mode</th><th>Predicted effect / rationale</th><th>S</th><th>O</th><th>D</th>
-<th>RPN</th><th>Meas. S</th><th>Meas. D</th><th>Meas. RPN</th><th>Prediction</th></tr>{''.join(rows)}</table></div>"""
-    return page("AI FMEA", body, "/fmea")
+            meas = "<td class='num muted'>—</td><td class='small muted' style='white-space:nowrap'>not tested yet</td>"
+        rows.append(f"<tr><td><b>{esc(r['component'])}</b></td><td>{esc(r['failure_mode'])}</td>"
+                    f"<td class='small'>{esc(r['effect'])}</td><td class='num' title='S {r['severity']} × O {r['occurrence']} × "
+                    f"D {r['detection']}'><b>{r['rpn']}</b></td>{meas}</tr>")
+    body = f"""<h1>AI test plan</h1>
+<p class="lead">Like an engineering FMEA, the AI lists how each part of the shop can fail and scores the risk:
+how bad for customers (severity), how likely (occurrence) and how hard to notice (detection), each 1–10.
+It then picks the tests that teach us the most. After each test, the measured result replaces the prediction.</p>
+<p class="small">{who}</p>
+<h2>{'What the AI chose to test, and why' if m['method'].startswith('ai') else 'Chosen tests, and why'}</h2><div class="grid">{''.join(cards)}</div>
+<h2>Risk register: predicted vs measured</h2>
+<div class="card wrap"><table><tr><th>Component</th><th>Failure</th><th>Expected effect</th><th>Predicted risk</th>
+<th>Measured risk</th><th>Prediction</th></tr>{''.join(rows)}</table>
+<p class="small muted">Risk score = S × O × D (max 1000). Measured severity comes from customer impact; measured detection from how long
+health checks missed it. Likelihood cannot be measured by one test, so it stays predicted (method: docs/SCORING.md).
+Generated {esc(f['generated'])}.</p></div>"""
+    return page("AI test plan", body, "/fmea")

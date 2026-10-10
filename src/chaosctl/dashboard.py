@@ -52,37 +52,47 @@ def status(cfg: Config) -> dict[str, Any]:
 
 def index_html(cfg: Config) -> str:
     esc = htmlreport.esc
-    rows = "".join(
-        f"<tr><td><a href='/runs/{esc(r['run_id'])}/'>{esc(r['run_id'])}</a></td><td>{esc(r.get('experiment', ''))}</td>"
-        f"<td>{esc(r.get('outcome'))}</td><td>{esc(r.get('severity'))} {esc(r.get('score'))}</td>"
-        f"<td class='num'>{esc(r.get('restore'))}</td><td>{esc(r.get('lost'))}</td></tr>"
-        for r in _runs(cfg) if not r["baseline"])
-    comps = "".join(f"<li><a href='/compare/{esc(p.stem)}'>{esc(p.stem)}</a></li>"
+    failures, safety_runs = pages.experiments(cfg)
+    cards = "".join(pages.result_card(cfg, a) for a in failures) or "<div class='card muted'>No failure tested yet.</div>"
+    safety_rows = []
+    for a in safety_runs:
+        ab = a.get("abort") or {}
+        what = ("Automatic stop: damage spread beyond the allowed area" if a["experiment_id"].startswith("TRIPWIRE")
+                else "Manual kill switch pressed during a test")
+        how = (f"stopped by the watchdog ({esc(ab.get('reason'))})" if ab.get("by") == "watchdog" else
+               "all faults rolled back" if a["outcome"] == "kill_switch" else f"outcome: {esc(a['outcome'])}")
+        rb = a.get("rollback") or []
+        verified = rb and all(r.get("verified") for r in rb)
+        safety_rows.append(f"<tr><td>{esc(what)}</td><td>{pages.TICK + ' ' if ab or a['outcome'] == 'kill_switch' else ''}{how}</td>"
+                           f"<td>{'✓ verified' if verified else 'n/a'}</td><td><a href='/runs/{esc(a['run_id'])}/'>details</a></td></tr>")
+    safety_html = (f"<div class='card wrap'><table><tr><th>Safety test</th><th>What happened</th><th>Undo verified</th><th></th></tr>"
+                   f"{''.join(safety_rows)}</table></div>") if safety_rows else "<div class='card muted'>No safety test run yet.</div>"
+    comps = "".join(f"<li><a href='/compare/{esc(p.stem)}'>{esc(p.stem.replace('comparison-', ''))}</a></li>"
                     for p in sorted(cfg.artifacts_dir.glob("comparison-*.json")))
-    body = f"""<h1>Experiment runs</h1>{live_panel()}
-<h2>Runs</h2><div class="card wrap"><table><tr><th>Run</th><th>Experiment</th><th>Outcome</th><th>Severity</th><th>Restore (s)</th><th>Carts lost</th></tr>{rows}</table></div>
-<h2>Before / after comparisons (optional)</h2><ul>{comps or '<li class="muted">none yet</li>'}</ul>"""
-    return pages.page("Runs", body, "/runs")
+    body = f"""<h1>Results</h1>
+<p class="lead">Every failure the system injected, what customers felt, and the fix. Open a result for the full
+where / how / why analysis and the raw evidence.</p>
+<h2>Failure tests</h2>{cards}
+<h2>Safety controls, proven</h2><p class="small muted">The system must stop itself when damage spreads, and one button must undo everything.</p>
+{safety_html}
+{'<h2>Before / after a fix</h2><ul>' + comps + '</ul>' if comps else ''}"""
+    return pages.page("Results", body, "/runs")
 
 
 LIVE_JS = """<script>
 async function tick(){try{const s=await (await fetch('/api/status')).json();
-let h=`<b>Kill switch:</b> ${s.kill_switch?'<span class="status bad">✕ ENGAGED</span>':'<span class="status ok">✓ off</span>'} · <b>Active faults:</b> ${s.active_faults.length}`;
-if(s.live){h+=`<h3>Live run ${s.live.run_id}</h3><div class="kpis">`+Object.entries(s.live.journeys).map(([j,v])=>{
-const st=v.ok===v.n?'<span class="status ok">✓ OK</span>':v.ok===0?'<span class="status bad">✕ DOWN</span>':'<span class="status warn">● DEGRADED</span>';
-return `<div class="card kpi"><div class="v">${v.ok}/${v.n}</div><div class="l">${j} ${st}</div></div>`}).join('')+`</div>`+
-`<pre>${s.live.events.map(e=>`${e.time} [${e.source}] ${e.action} ${e.reason||''}`).join('\\n')}</pre>`}
-else h+=' · <span class="muted">no run in progress</span>';
-document.getElementById('live').innerHTML=h}catch(e){}}
+let h=s.live?s.live.events.map(e=>`${e.time} [${e.source}] ${e.action} ${e.reason||''}`).join('\\n'):'';
+document.getElementById('events').textContent=h||'no test running';}catch(e){}}
 tick();setInterval(tick,2000);
 </script>"""
 
 
 def live_panel() -> str:
-    return """<h2>Live</h2><div class="card" id="live">loading live status…</div>
-<form method="post" action="/api/kill" onsubmit="return confirm('Engage the kill switch and roll back ALL faults?')">
-<button style="background:var(--critical);color:#fff;border:0;border-radius:8px;padding:10px 16px;font-weight:650">■ KILL SWITCH</button>
-<span class="small muted">rolls back every active fault and blocks new runs (CLI: <code>chaosctl kill --reset</code> to re-enable)</span></form>""" + LIVE_JS
+    return """<div class="card"><h3>Emergency stop</h3><p class="small">Undoes every active fault immediately and blocks new tests.</p>
+<form method="post" action="/api/kill" onsubmit="return confirm('Stop everything and undo all faults?')">
+<button style="background:var(--critical);color:#fff;border:0;border-radius:8px;padding:10px 16px;font-weight:650;width:100%">■ KILL SWITCH</button></form>
+<p class="small muted">Re-enable later with <code>chaosctl kill --reset</code>.</p></div>
+<details><summary>Engine event log</summary><pre id="events">loading…</pre></details>""" + LIVE_JS
 
 
 def project_health(cfg: Config, ctx: faults.Ctx) -> dict[str, Any]:
@@ -110,6 +120,9 @@ def live_state(cfg: Config, ctx: faults.Ctx) -> str:
     overlay = pages.live_overlay(cfg, [f["target"] for f in st["active_faults"]], snap, failing)
     return pages.live_fragment(cfg, overlay, journeys, (st["live"] or {}).get("run_id"), green)
 
+
+LIVE_INTRO = ("<h1>Live test</h1><p class='lead'>Watch a failure spread through the shop and heal. Updates every 2 s "
+              "from test requests, container health and the active faults.</p>")
 
 LIVE_MAP_JS = """<div id="livemap">loading…</div><script>
 async function lm(){try{document.getElementById('livemap').innerHTML=await (await fetch('/api/live-map')).text()}catch(e){}}
@@ -139,9 +152,8 @@ def make_handler(cfg: Config, ctx_factory: Callable[[], faults.Ctx]):
                 if parts == ["runs"]:
                     return self._send(200, index_html(cfg))
                 if parts == ["live"]:
-                    return self._send(200, pages.page("Live blast radius", "<h1>Live blast radius</h1>"
-                                                      "<p class='muted small'>Refreshes every 2 s from probes, container "
-                                                      "health and active faults.</p>" + LIVE_MAP_JS + live_panel(), "/live"))
+                    return self._send(200, pages.page("Live test", LIVE_INTRO + "<div class='two'><div>" + LIVE_MAP_JS
+                                                      + "</div><div>" + live_panel() + "</div></div>", "/live"))
                 if parts == ["api", "live-map"]:
                     return self._send(200, live_state(cfg, ctx_factory()))
                 if parts == ["fmea"]:

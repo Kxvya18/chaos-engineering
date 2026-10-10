@@ -5,7 +5,7 @@
 | Repository | `Kxvya18/chaos-engineering` (https://github.com/Kxvya18/chaos-engineering) |
 | Default branch | `main` created (from setup commit e83498b). GitHub made `claude/nice-bell-5v9ehy` default on first push; **owner must switch default to `main`** in Settings → General → Default branch (no API tool for this in the Claude session). |
 | CI checks | `.github/workflows/ci.yml`: `repo-checks` (scripts/check_repo.py), `python` (ruff 0.16.8; pytest 8.4.2 when tests exist). Required: both. |
-| Branch protection | None yet. Recommended (owner sets in Settings → Branches → `main`): require PR, require status checks `repo-checks` + `python`, block force-push. |
+| Branch protection | **Owner action (no API tool in the Claude session).** Settings → Rules → Rulesets → New branch ruleset, target `main` (or Settings → Branches → Add rule): ✓ Require a pull request before merging · ✓ Require status checks to pass: `repo-checks`, `python` · ✓ Block force pushes · ✓ Restrict deletions · do not allow bypass for collaborators. Result: collaborators can only change `main` through a PR with green CI. Required approvals: set **0** if Claude's PRs must still merge (they are authored as the owner account, and GitHub forbids self-approval); set **1** to require a human teammate's review on every PR. |
 | Tooling | Claude cloud session: GitHub MCP integration (no `gh` auth). Local: `gh auth login` (official browser flow). Never paste tokens into chat. |
 
 ## Operating policy (authorized by team)

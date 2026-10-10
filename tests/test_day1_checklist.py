@@ -54,8 +54,8 @@ def test_milestone1_checklist_all_green(env, monkeypatch):
     html = pages.checklist_html(rows)
     assert html.count("✓ done") == 6
     assert "<svg" in pages.map_html(cfg) and "key-value store" in pages.map_html(cfg)
-    assert "STEADY STATE ACCEPTED" in pages.baseline_html(cfg)
-    assert "Experiment runs" in dashboard.index_html(cfg)
+    assert "Steady state accepted" in pages.baseline_html(cfg)
+    assert "Safety controls, proven" in dashboard.index_html(cfg)
 
 
 def test_static_export_has_relative_links_and_no_live_parts(env, monkeypatch, tmp_path):

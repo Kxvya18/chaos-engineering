@@ -1,6 +1,6 @@
 # STATE
 
-_Last updated: 2026-10-10 — S1 deep-dive (crash → evidence → AI incident → fix → compare), dashboard, deployed mode; simulation only._
+_Last updated: 2026-10-10 — verified rollback, AI self-correction loop, reviewer-focused website redesign, static export; simulation only._
 
 ## Completed
 - Project context, 9 manual skills, CI (`repo-checks`, `python`) — Kxvya18/chaos-engineering#1.
@@ -31,6 +31,14 @@ _Last updated: 2026-10-10 — S1 deep-dive (crash → evidence → AI incident �
   No valid baseline yet. Kill switch left engaged. Docker Desktop memory 7.75 GiB.
 - Added: health-check blind-spot metric, live blast-radius map, `doctor --collect`, AI FMEA (`plan`/`autopilot`)
   with measured S/D/RPN per run, `/fmea` page.
+
+- Verified rollback: pre-injection snapshot → undo → state checks → retry → `docker restart` (`faults.rollback_verified`).
+- AI quality ladder: schema output → code validation → repair loop with the validation errors (2×) → last validated
+  answer (cache) → rule-based fallback, always labelled with the reason (`ai.validated_call`).
+- Website redesign for reviewers ("Resilience Lab"): Overview (key findings + Day-1 checkpoint) → System map →
+  Normal behaviour → AI test plan → Live test → Results. Plain wording; technical evidence folded into collapsible
+  sections; "Next" button on every page. `chaosctl export-site` writes a static snapshot (`site/`).
+  Evidence: `pytest -q` 71 passed; pages checked visually on simulated data only (not committed).
 
 ## Current blocker
 - No live evidence yet: everything below the simulation must run on the team Mac (no Docker daemon in the Claude cloud session).

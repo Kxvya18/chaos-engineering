@@ -31,7 +31,7 @@ def _static(html: str, stamp: str) -> str:
 
 
 def export(cfg: Config, out: Path) -> list[Path]:
-    stamp = iso()
+    stamp = iso()[:16].replace("T", " ") + " UTC"
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
@@ -51,9 +51,9 @@ def export(cfg: Config, out: Path) -> list[Path]:
     write("map.html", pages.map_html(cfg))
     write("baseline.html", pages.baseline_html(cfg))
     write("fmea.html", pages.fmea_html(cfg))
-    write("live.html", pages.page("Live blast radius", "<h1>Live blast radius</h1><p>The live view needs the running "
-                                  "dashboard (<code>chaosctl dashboard</code>). In this snapshot, open a run from "
-                                  "<a href='/runs'>Runs</a> to see its timeline and blast radius.</p>", "/live"))
+    write("live.html", pages.page("Live test", "<h1>Live test</h1><p class='lead'>The live view needs the running "
+                                  "dashboard (<code>chaosctl dashboard</code>). In this snapshot, open a test from "
+                                  "<a href='/runs'>Results</a> to see how the failure spread and healed.</p>", "/live"))
     write("runs.html", dashboard.index_html(cfg).replace(dashboard.live_panel(), ""))
     for d in sorted(cfg.runs_dir.glob("*")) if cfg.runs_dir.exists() else []:
         if not (d / "analysis.json").exists():
