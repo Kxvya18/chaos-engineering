@@ -44,6 +44,11 @@ this document and that file must agree (the code reads only the file).
 | A6 | Kill switch | `state/KILL` exists |
 On abort the watchdog writes `runs/<id>/ABORT.json` and rolls back every fault of that run itself.
 
+**Watchdog guarantees.** No fault is injected until the watchdog process has reported in (`watchdog_ready` event;
+otherwise the run ends `watchdog_not_running`). The watchdog runs in its own session and ignores Ctrl-C, so stopping
+the operator's terminal can't stop the safety guard. It exits on its own once the run is DONE and no fault remains.
+The orchestrator treats SIGINT and SIGTERM alike: stop, roll back, observe recovery.
+
 ## Deployed mode (container)
 `deploy/compose.chaosctl.yaml` runs chaosctl as a container on the demo network. It mounts the Docker socket, which is
 root-equivalent inside Docker Desktop's VM. That is standard for Docker chaos tools, but it means the code-level

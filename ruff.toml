@@ -8,3 +8,4 @@ select = ["E", "F", "W", "I", "B", "FURB"]
 # HTML/CSS templates read better unwrapped
 "src/chaosctl/htmlreport.py" = ["E501"]
 "src/chaosctl/dashboard.py" = ["E501"]
+"src/chaosctl/pages.py" = ["E501"]

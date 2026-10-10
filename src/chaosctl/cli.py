@@ -134,17 +134,17 @@ def cmd_baseline(cfg: config.Config, args) -> int:
             return {"error": str(exc)}
 
     run_dir = baseline.run(cfg, Journeys(cfg, ctx.http).all(), args.duration, context,
-                           health=lambda: project_health(cfg, ctx), load=load)
+                           health=lambda: project_health(cfg, ctx), load=load, warmup_s=args.warmup)
     s = read_json(run_dir / "summary.json")
     print(f"\nbaseline -> {run_dir}/summary.json and artifacts/baseline.json\n")
-    print(f"  {'journey':16} {'samples':>7} {'error rate':>10} {'p50 ms':>8} {'p95 ms':>8} {'p99 ms':>8} {'req/s':>6}")
+    print(f"  {'journey':16} {'samples':>7} {'error rate':>10} {'p50 ms':>8} {'p95 ms':>8} {'p99 ms':>8} {'probe/s':>7}")
     for j, st in s["journeys"].items():
         rps = f"{st['throughput_rps']:.2f}" if st["throughput_rps"] else "n/a"
         print(f"  {j:16} {st['n']:>7} {st['error_rate']:>10.1%} {st['p50_ms']:>8.0f} {st['p95_ms']:>8.0f} "
-              f"{st['p99_ms']:>8.0f} {rps:>6}")
+              f"{st['p99_ms']:>8.0f} {rps:>7}")
     print("\n  baseline quality:")
     for c in s["quality"]["checks"]:
-        print(f"   [{'PASS' if c['ok'] else 'FAIL'}] {c['check']}: {c['detail']}")
+        print(f"   [{'PASS' if c['ok'] else 'WARN' if c['ok'] is None else 'FAIL'}] {c['check']}: {c['detail']}")
     print(f"\n  STEADY STATE {'ACCEPTED' if s['quality']['pass'] else 'REJECTED - fix the app/load and re-run baseline'}")
     return 0 if s["quality"]["pass"] else 1
 
@@ -328,6 +328,10 @@ def cmd_selftest(cfg: config.Config, args) -> int:
 
 
 def cmd_watchdog(cfg: config.Config, args) -> int:
+    import signal
+
+    # The watchdog must outlive a Ctrl-C in the operator's terminal; it exits on its own when the run is DONE.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     Watchdog(cfg, Path(args.run_dir), _ctx(cfg)).run()
     return 0
 
@@ -341,6 +345,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("map", help="build evidence-graded dependency map")
     b = sub.add_parser("baseline", help="measure steady state under normal load")
     b.add_argument("--duration", type=float, default=300)
+    b.add_argument("--warmup", type=float, default=15, help="seconds probed but excluded from the numbers")
     pl = sub.add_parser("plan", help="AI-ranked (or rule-based) experiment plan")
     pl.add_argument("--no-ai", action="store_true")
     pl.add_argument("--out", default="artifacts/experiment-plan.json")

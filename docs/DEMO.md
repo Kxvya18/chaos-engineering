@@ -1,13 +1,16 @@
 # Demo scripts
 
-## Day-1 checkpoint demo (≈ 90 s, no AI)
+## Day-1 checkpoint demo (≈ 2 min, no AI)
+Have open: dashboard (`scripts/m1.sh 6`) and a terminal. Run everything once beforehand so all six checklist rows are ✓.
+
 | Time | Show | Say |
 |---|---|---|
-| 0:00–0:15 | Shop + `scripts/demo.sh ps` | "Open-source cloud-native shop, around 20 containers, running only in our sandbox." |
-| 0:15–0:30 | `docs/DEPENDENCIES.md` | "Services, dependencies and data flows, each checked against live traces." |
-| 0:30–0:45 | Baseline table + `STEADY STATE ACCEPTED` | "Normal error rate, latency and container health under steady load." |
-| 0:45–1:15 | `scripts/m1.sh 4` live lines + dashboard tiles | "We crash the cart store: cart and checkout go red, everything else stays green. Docker restarts it and we measure time to restore." |
-| 1:15–1:30 | Tripwire run: `abort=A1…` | "If damage spreads beyond the allowed blast radius, the watchdog stops and undoes the experiment by itself. One command or button kills everything." |
+| 0:00–0:15 | Dashboard home: **Day-1 checklist** (6 ✓ rows) | "Every row comes from evidence files and live container state, not ticked by hand." |
+| 0:15–0:35 | `/map` | "Services, dependencies and data flows, left to right: requests in blue, Kafka events in orange, databases in green. Solid lines are confirmed by config *and* live traces. It also found gaps: three services with no health check." |
+| 0:35–0:55 | `/baseline` | "Five minutes of normal behaviour under steady load: error rate, p50/p95/p99 and container health at start and end. The steady state is accepted only if every quality check passes." |
+| 0:55–1:30 | Terminal: `chaosctl run --scenario cart-store-crash` (live lines), then its run page | "We crash the cart store. Cart and checkout go red, the other five journeys stay green, so the blast radius is contained. Docker restarts it, and we measure time to restore. The cart check shows whether customers' carts survived." |
+| 1:30–1:50 | Tripwire run page (`abort=A1…`) | "Safety: when damage spreads beyond the declared blast radius, the independent watchdog stops the experiment and undoes it by itself." |
+| 1:50–2:00 | Dashboard KILL SWITCH button | "And one button, or `chaosctl kill`, rolls back everything immediately." |
 
 # Final demo (≤ 3 minutes, Day 2)
 
