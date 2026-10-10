@@ -1,0 +1,118 @@
+# Single source of truth for sandbox identity, safety limits and probes.
+# Must agree with docs/SAFETY.md (v1). chaosctl reads only this file.
+
+[sandbox]
+compose_project = "opentelemetry-demo"
+docker_network = "opentelemetry-demo"
+# Directory of the cloned OpenTelemetry Demo (used by `chaosctl map`). Override with CHAOS_DEMO_DIR.
+demo_dir = "~/chaos/opentelemetry-demo"
+compose_files = ["compose.yaml", "compose.full.yaml", "compose.observability.yaml"]
+base_url = "http://localhost:8080"
+locust_url = "http://localhost:8080/loadgen"
+jaeger_api = "http://localhost:8080/jaeger/ui/api"
+state_dir = "state"
+runs_dir = "runs"
+artifacts_dir = "artifacts"
+netem_image = "chaosctl-netem:local"
+interface = "eth0"
+
+[allowlist]
+targets = [
+  "ad", "cart", "checkout", "currency", "email", "frontend", "image-provider", "payment",
+  "product-catalog", "quote", "recommendation", "shipping",
+  "astronomy-db", "valkey-cart", "kafka", "accounting", "fraud-detection",
+]
+protected = [
+  "frontend-proxy", "otel-collector", "jaeger", "prometheus", "grafana", "opensearch",
+  "flagd", "flagd-ui", "telemetry-docs", "opamp-server", "load-generator",
+]
+datastores = ["astronomy-db", "valkey-cart", "kafka"]
+
+[limits]
+max_active_faults = 1
+max_active_faults_combined = 2
+
+[limits.container-stop]
+max_duration_s = 120
+
+[limits.container-pause]
+max_duration_s = 60
+
+[limits.network-delay]
+max_duration_s = 120
+max_delay_ms = 2000
+max_jitter_ms = 500
+max_loss_pct = 30
+
+[limits.cpu-throttle]
+max_duration_s = 120
+min_cpus = 0.05
+
+[limits.traffic-spike]
+max_duration_s = 180
+max_users = 50
+max_spawn_rate = 10
+
+[watchdog]
+window_s = 10
+min_samples = 5
+min_offending = 2
+poll_s = 1.0
+stale_after_s = 10
+heartbeat_stale_s = 10
+unexpected_error_rate_pp = 20
+unexpected_p95_factor = 5
+unexpected_p95_floor_ms = 1000
+global_error_rate_max = 0.9
+
+[steady_state]
+pre_s = 20
+error_rate_pp = 5
+
+[recovery]
+window_s = 5
+consecutive = 3
+error_rate_pp = 5
+p95_factor = 1.5
+p95_slack_ms = 50
+timeout_s = 180
+
+[probes]
+interval_s = 2.0
+timeout_s = 5.0
+currency = "USD"
+product_ids = ["0PUK6V6EV0", "1YMWWN1N4O", "2ZYFJ3GM2N", "66VCHSJNUP", "6E92ZMYYFZ",
+               "9SIQT8TOJO", "L9ECAV7KIM", "LS4PSXUNUM", "OLJCESPC7Z", "HQTGWGPNH4"]
+ad_categories = ["binoculars", "telescopes", "accessories", "assembly", "travel", "books"]
+
+# Customer journeys probed through frontend-proxy. `services` is the ASSUMED service path
+# (from frontend API source); `chaosctl map` checks it against Jaeger runtime edges.
+# `weight` = business criticality used by the severity score (docs/SCORING.md).
+[journeys.home]
+weight = 0.7
+services = ["frontend"]
+
+[journeys.browse]
+weight = 0.6
+services = ["frontend", "product-catalog", "astronomy-db"]
+
+[journeys.product]
+weight = 0.6
+services = ["frontend", "product-catalog", "astronomy-db"]
+
+[journeys.recommendations]
+weight = 0.3
+services = ["frontend", "recommendation", "product-catalog", "astronomy-db"]
+
+[journeys.ads]
+weight = 0.2
+services = ["frontend", "ad"]
+
+[journeys.cart]
+weight = 0.8
+services = ["frontend", "cart", "valkey-cart", "product-catalog", "astronomy-db"]
+
+[journeys.checkout]
+weight = 1.0
+services = ["frontend", "checkout", "cart", "valkey-cart", "product-catalog", "astronomy-db",
+            "currency", "shipping", "quote", "payment", "email", "kafka"]

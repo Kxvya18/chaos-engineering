@@ -33,7 +33,7 @@ this document and that file must agree (the code reads only the file).
 - Every fault has a **hard TTL in three places**: the adapter (e.g. netem helper sleeps then deletes its qdisc),
   the orchestrator loop, and the watchdog (rolls back any registry entry past `expires_at`).
 
-## Abort conditions (watchdog, separate process, rolling 10 s window, ≥ 5 samples)
+## Abort conditions (watchdog, separate process, rolling 10 s window, ≥ 5 samples; A1 needs ≥ 2 offending samples)
 | # | Condition | Threshold |
 |---|---|---|
 | A1 | **Blast radius exceeded** — a journey *not* in the experiment's `expected_journeys` degrades | error rate > baseline + 20 pp, or p95 > max(5 × baseline p95, baseline p95 + 1000 ms) |
