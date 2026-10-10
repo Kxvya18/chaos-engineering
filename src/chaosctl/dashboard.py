@@ -12,7 +12,7 @@ import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
-from . import faults, htmlreport, metrics, safety
+from . import faults, htmlreport, metrics, pages, safety
 from .config import Config
 from .registry import Registry
 from .util import now, read_json, read_jsonl
@@ -53,32 +53,49 @@ def status(cfg: Config) -> dict[str, Any]:
 def index_html(cfg: Config) -> str:
     esc = htmlreport.esc
     rows = "".join(
-        f"<tr><td><a href='/runs/{esc(r['run_id'])}/'>{esc(r['run_id'])}</a></td><td>{esc(r.get('experiment', 'baseline' if r['baseline'] else ''))}</td>"
+        f"<tr><td><a href='/runs/{esc(r['run_id'])}/'>{esc(r['run_id'])}</a></td><td>{esc(r.get('experiment', ''))}</td>"
         f"<td>{esc(r.get('outcome'))}</td><td>{esc(r.get('severity'))} {esc(r.get('score'))}</td>"
         f"<td class='num'>{esc(r.get('restore'))}</td><td>{esc(r.get('lost'))}</td></tr>"
         for r in _runs(cfg) if not r["baseline"])
     comps = "".join(f"<li><a href='/compare/{esc(p.stem)}'>{esc(p.stem)}</a></li>"
                     for p in sorted(cfg.artifacts_dir.glob("comparison-*.json")))
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>chaosctl dashboard</title><style>{htmlreport.CSS}</style></head><body><main>
-<h1>chaosctl — AI-driven chaos engineering</h1><p class="muted">OpenTelemetry Demo sandbox · safety plane independent of AI</p>
-<div class="card" id="live">loading live status…</div>
+    body = f"""<h1>Experiment runs</h1>{live_panel()}
+<h2>Runs</h2><div class="card wrap"><table><tr><th>Run</th><th>Experiment</th><th>Outcome</th><th>Severity</th><th>Restore (s)</th><th>Carts lost</th></tr>{rows}</table></div>
+<h2>Before / after comparisons (optional)</h2><ul>{comps or '<li class="muted">none yet</li>'}</ul>"""
+    return pages.page("Runs", body)
+
+
+LIVE_JS = """<script>
+async function tick(){try{const s=await (await fetch('/api/status')).json();
+let h=`<b>Kill switch:</b> ${s.kill_switch?'<span class="status bad">✕ ENGAGED</span>':'<span class="status ok">✓ off</span>'} · <b>Active faults:</b> ${s.active_faults.length}`;
+if(s.live){h+=`<h3>Live run ${s.live.run_id}</h3><div class="kpis">`+Object.entries(s.live.journeys).map(([j,v])=>{
+const st=v.ok===v.n?'<span class="status ok">✓ OK</span>':v.ok===0?'<span class="status bad">✕ DOWN</span>':'<span class="status warn">● DEGRADED</span>';
+return `<div class="card kpi"><div class="v">${v.ok}/${v.n}</div><div class="l">${j} ${st}</div></div>`}).join('')+`</div>`+
+`<pre>${s.live.events.map(e=>`${e.time} [${e.source}] ${e.action} ${e.reason||''}`).join('\\n')}</pre>`}
+else h+=' · <span class="muted">no run in progress</span>';
+document.getElementById('live').innerHTML=h}catch(e){}}
+tick();setInterval(tick,2000);
+</script>"""
+
+
+def live_panel() -> str:
+    return """<h2>Live</h2><div class="card" id="live">loading live status…</div>
 <form method="post" action="/api/kill" onsubmit="return confirm('Engage the kill switch and roll back ALL faults?')">
 <button style="background:var(--critical);color:#fff;border:0;border-radius:8px;padding:10px 16px;font-weight:650">■ KILL SWITCH</button>
-<span class="small muted">rolls back every active fault and blocks new runs (CLI: <code>chaosctl kill --reset</code> to re-enable)</span></form>
-<h2>Runs</h2><div class="card wrap"><table><tr><th>Run</th><th>Experiment</th><th>Outcome</th><th>Severity</th><th>Restore (s)</th><th>Carts lost</th></tr>{rows}</table></div>
-<h2>Before / after comparisons</h2><ul>{comps or '<li class="muted">none yet</li>'}</ul>
-<script>
-async function tick(){{try{{const s=await (await fetch('/api/status')).json();
-let h=`<b>Kill switch:</b> ${{s.kill_switch?'<span class="status bad">✕ ENGAGED</span>':'<span class="status ok">✓ off</span>'}} · <b>Active faults:</b> ${{s.active_faults.length}}`;
-if(s.live){{h+=`<h3>Live run ${{s.live.run_id}}</h3><div class="kpis">`+Object.entries(s.live.journeys).map(([j,v])=>{{
-const st=v.ok===v.n?'<span class="status ok">✓ OK</span>':v.ok===0?'<span class="status bad">✕ DOWN</span>':'<span class="status warn">● DEGRADED</span>';
-return `<div class="card kpi"><div class="v">${{v.ok}}/${{v.n}}</div><div class="l">${{j}} ${{st}}</div></div>`}}).join('')+`</div>`+
-`<pre>${{s.live.events.map(e=>`${{e.time}} [${{e.source}}] ${{e.action}} ${{e.reason||''}}`).join('\\n')}}</pre>`}}
-else h+=' · <span class="muted">no run in progress</span>';
-document.getElementById('live').innerHTML=h}}catch(e){{}}}}
-tick();setInterval(tick,2000);
-</script></main></body></html>"""
+<span class="small muted">rolls back every active fault and blocks new runs (CLI: <code>chaosctl kill --reset</code> to re-enable)</span></form>""" + LIVE_JS
+
+
+def project_health(cfg: Config, ctx: faults.Ctx) -> dict[str, Any]:
+    from .cli import project_health as ph
+    return ph(cfg, ctx)
+
+
+def storefront(cfg: Config, ctx: faults.Ctx) -> tuple[bool, str]:
+    try:
+        status, _, ms = ctx.http.request("GET", cfg.sandbox["base_url"] + "/")
+        return status < 400, f"HTTP {status} in {ms:.0f} ms"
+    except Exception as exc:  # unreachable shop is a FAIL row, not a crash
+        return False, str(exc)
 
 
 def make_handler(cfg: Config, ctx_factory: Callable[[], faults.Ctx]):
@@ -99,7 +116,14 @@ def make_handler(cfg: Config, ctx_factory: Callable[[], faults.Ctx]):
             parts = [p for p in self.path.split("?")[0].split("/") if p]
             try:
                 if not parts:
+                    rows = pages.milestone1(cfg, lambda: project_health(cfg, ctx_factory()), lambda: storefront(cfg, ctx_factory()))
+                    return self._send(200, pages.page("Day-1 checkpoint", pages.checklist_html(rows) + live_panel()))
+                if parts == ["runs"]:
                     return self._send(200, index_html(cfg))
+                if parts == ["map"]:
+                    return self._send(200, pages.map_html(cfg))
+                if parts == ["baseline"]:
+                    return self._send(200, pages.baseline_html(cfg))
                 if parts == ["api", "status"]:
                     return self._send(200, json.dumps(status(cfg), default=str), "application/json")
                 if parts[0] == "runs" and len(parts) in (2, 3) and all(SAFE.match(p) for p in parts[1:]):

@@ -25,3 +25,15 @@ def test_baseline_rejected_without_load_errors_or_health(cfg):
     bad_h = {**good_h, "cart": {"state": "running", "status": "Up (unhealthy)"}}
     q = baseline.quality(cfg, _summary(cfg), good_h, bad_h, {"state": "running", "user_count": 5})
     assert not next(c for c in q["checks"] if c["check"] == "containers healthy at end")["ok"]
+
+
+def test_baseline_run_excludes_warmup_and_reports_stability(cfg):
+    import json
+
+    run_dir = baseline.run(cfg, {"home": lambda: (True, 200, None)}, duration_s=1.0, context={}, warmup_s=0.5,
+                           health=lambda: {t: {"state": "running", "status": "Up"} for t in cfg.allowlist},
+                           load=lambda: {"state": "running", "user_count": 5}, progress=lambda m: None)
+    s = json.loads((run_dir / "summary.json").read_text())
+    all_samples = [json.loads(x) for x in (run_dir / "metrics.jsonl").read_text().splitlines() if x]
+    assert s["warmup_s"] == 0.5 and s["journeys"]["home"]["n"] < len(all_samples)
+    assert "stability" in s and s["quality"]["checks"]

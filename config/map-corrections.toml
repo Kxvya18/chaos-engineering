@@ -1,0 +1,12 @@
+# Manual corrections to the generated dependency map (Day-1 slide: "manual corrections allowed").
+# Every correction needs a reason; `chaosctl map` applies them and lists them in docs/DEPENDENCIES.md.
+#
+# [[add]]
+# from = "checkout"
+# to = "kafka"
+# reason = "async order event; seen in checkout logs during the baseline"
+#
+# [[remove]]
+# from = "frontend"
+# to = "some-service"
+# reason = "env var is set but never used (verified in source: <file:line>)"

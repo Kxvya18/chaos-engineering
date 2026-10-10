@@ -230,6 +230,19 @@ def case_ai_unavailable(env: Env) -> str:
             f"{sorted(types)}; tampered plan refused ({msg})")
 
 
+def case_watchdog_required(env: Env) -> str:
+    orch = env.orchestrator()
+    orch.watchdog_starter = lambda run_dir: None  # simulate a watchdog that failed to start
+    orch._watchdog_ready = lambda run_dir, timeout_s=15.0: False
+    exp = {"id": "SIM-no-watchdog", "faults": [{"fault_type": "container-stop", "target": "ad", "params": {},
+                                                 "duration_s": 5}], "expected_journeys": ["ads"]}
+    run_dir = orch.run(exp)
+    outcome = read_json(run_dir / "outcome.json")
+    injected = [e for e in read_jsonl(run_dir / "events.jsonl") if e["action"].startswith("inject")]
+    assert outcome["status"] == "watchdog_not_running" and not injected, outcome
+    return "watchdog did not report in -> run aborted before any injection"
+
+
 CASES = [
     ("Allowlist enforcement", case_allowlist),
     ("Invalid parameters", case_invalid_params),
@@ -241,6 +254,7 @@ CASES = [
     ("Stale telemetry (A3)", case_stale),
     ("Dead orchestrator (A4)", case_dead_orchestrator),
     ("Steady-state gate", case_steady_state_gate),
+    ("No injection without a running watchdog", case_watchdog_required),
     ("AI unavailable + plan tamper check", case_ai_unavailable),
 ]
 

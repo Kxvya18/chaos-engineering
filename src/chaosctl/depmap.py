@@ -18,8 +18,13 @@ from .config import Config
 from .http import Http, HttpError
 from .util import iso, write_json
 
-INFRA = {"otel-collector", "jaeger", "prometheus", "grafana", "opensearch", "flagd", "flagd-ui",
-         "telemetry-docs", "opamp-server"}
+TELEMETRY = {"otel-collector", "jaeger", "prometheus", "grafana", "opensearch", "telemetry-docs", "opamp-server"}
+FEATURE_FLAGS = {"flagd", "flagd-ui"}
+INFRA = TELEMETRY | FEATURE_FLAGS  # excluded from blast-radius math (and protected from faults)
+LOAD_CLIENTS = {"load-generator"}  # synthetic customers: edges INTO it are the operator's web UI, not data flows
+# client-span attributes that identify a datastore/broker call inside the CALLER's trace spans
+DB_SYSTEMS = {"redis": "valkey-cart", "valkey": "valkey-cart", "postgresql": "astronomy-db", "postgres": "astronomy-db"}
+MESSAGING_SYSTEMS = {"kafka": "kafka"}
 
 
 def compose_config(cfg: Config) -> dict[str, Any]:
@@ -84,7 +89,13 @@ def static_edges(compose: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], li
 def flow_type(e: dict[str, Any], nodes: dict[str, Any]) -> str:
     """Classify the data flow of an edge from its evidence (env var names) and target kind."""
     keys = " ".join(ev.get("ref", "") for ev in e.get("evidence", [])).upper()
-    if e["to"] in INFRA:
+    if e["from"] in TELEMETRY:
+        return "telemetry (monitoring scrape)"
+    if e["to"] in LOAD_CLIENTS:
+        return "operator UI route"
+    if e["to"] in FEATURE_FLAGS:
+        return "feature-flag config"
+    if e["to"] in TELEMETRY:
         return "telemetry"
     if "KAFKA" in keys or e["to"] == "kafka":
         return "async event (Kafka)"
@@ -105,8 +116,46 @@ def runtime_edges(cfg: Config, http: Http, lookback_s: int = 3600) -> list[dict[
     return [{"from": r["parent"], "to": r["child"], "call_count": r.get("callCount")} for r in rows or []]
 
 
+def client_span_edges(cfg: Config, http: Http, callers: list[str], lookback_s: int = 3600) -> list[dict[str, Any]]:
+    """Datastores/brokers are not traced as services, so Jaeger's dependency graph never shows them.
+    Verify those edges from the CALLER's client spans (db.system / messaging.system attributes)."""
+    api = cfg.sandbox["jaeger_api"].rstrip("/")
+    end = int(time.time() * 1e6)
+    found: dict[tuple[str, str], dict[str, Any]] = {}
+    for svc in callers:
+        try:
+            data = http.get_json(f"{api}/traces", {"service": svc, "start": end - lookback_s * 1_000_000,
+                                                   "end": end, "limit": 30})
+        except (HttpError, ValueError):
+            continue
+        for tr in (data or {}).get("data") or []:
+            procs = {k: v.get("serviceName") for k, v in (tr.get("processes") or {}).items()}
+            for sp in tr.get("spans") or []:
+                if procs.get(sp.get("processID")) != svc:
+                    continue
+                tags = {x.get("key"): str(x.get("value")).lower() for x in sp.get("tags") or []}
+                target = DB_SYSTEMS.get(tags.get("db.system", "")) or MESSAGING_SYSTEMS.get(tags.get("messaging.system", ""))
+                if target:
+                    e = found.setdefault((svc, target), {"from": svc, "to": target, "spans": 0,
+                                                         "attribute": tags.get("db.system") or tags.get("messaging.system"),
+                                                         "example_operation": sp.get("operationName")})
+                    e["spans"] += 1
+    return list(found.values())
+
+
+def load_corrections(cfg: Config) -> dict[str, Any]:
+    path = cfg.root / "config" / "map-corrections.toml"
+    if not path.exists():
+        return {"add": [], "remove": []}
+    import tomllib
+    with path.open("rb") as fh:
+        data = tomllib.load(fh)
+    return {"add": data.get("add", []), "remove": data.get("remove", [])}
+
+
 def build_map(cfg: Config, compose: dict[str, Any] | None, runtime: list[dict[str, Any]] | None,
-              runtime_error: str | None = None) -> dict[str, Any]:
+              runtime_error: str | None = None, client_spans: list[dict[str, Any]] | None = None,
+              corrections: dict[str, Any] | None = None) -> dict[str, Any]:
     nodes, s_edges = static_edges(compose) if compose else ({}, [])
     by_key = {(e["from"], e["to"]): {**e, "static": True, "runtime": False} for e in s_edges}
     for r in runtime or []:
@@ -118,11 +167,30 @@ def build_map(cfg: Config, compose: dict[str, Any] | None, runtime: list[dict[st
         e["evidence"].append({"type": "jaeger-dependencies", "call_count": r["call_count"]})
         for n in k:
             nodes.setdefault(n, {"name": n, "image": None, "kind": "unknown(runtime-only)", "healthcheck": None})
+    for cs in client_spans or []:
+        k = (cs["from"], cs["to"])
+        e = by_key.setdefault(k, {"from": cs["from"], "to": cs["to"], "evidence": [], "static": False, "runtime": False})
+        e["runtime"] = True
+        e["evidence"].append({"type": "jaeger-client-span", "spans": cs["spans"], "attribute": cs["attribute"],
+                              "operation": cs["example_operation"]})
+    corrections = corrections or {"add": [], "remove": []}
+    removed = []
+    for c in corrections.get("remove", []):
+        if by_key.pop((c["from"], c["to"]), None) is not None:
+            removed.append(c)
+    for c in corrections.get("add", []):
+        e = by_key.setdefault((c["from"], c["to"]), {"from": c["from"], "to": c["to"], "evidence": [],
+                                                     "static": False, "runtime": False})
+        e["manual"] = True
+        e["evidence"].append({"type": "manual-correction", "ref": c.get("reason", "")})
+        for n in (c["from"], c["to"]):
+            nodes.setdefault(n, {"name": n, "image": None, "kind": "unknown(manual)", "healthcheck": None})
     for e in by_key.values():
         e["flow"] = flow_type(e, nodes)
         e["status"] = ("verified-static+runtime" if e["static"] and e["runtime"] else
-                       "verified-static" if e["static"] else "verified-runtime")
-        e["telemetry"] = e["to"] in INFRA
+                       "verified-static" if e["static"] else "verified-runtime" if e["runtime"] else "manual")
+        # monitoring, feature flags and the operator UI route are not on the customer request path
+        e["telemetry"] = e["to"] in INFRA or e["from"] in INFRA or e["to"] in LOAD_CLIENTS
     runtime_set = {(e["from"], e["to"]) for e in by_key.values() if e["runtime"]}
     journeys = {}
     for name, j in cfg.journeys.items():
@@ -143,7 +211,9 @@ def build_map(cfg: Config, compose: dict[str, Any] | None, runtime: list[dict[st
         "no_healthcheck": sorted(n for n, v in nodes.items() if v.get("healthcheck") is False and v["kind"] != "infra"),
     }
     return {"generated": iso(), "app": "opentelemetry-demo", "version": "3.1.0",
-            "sources": {"static": bool(compose), "runtime": runtime is not None, "runtime_error": runtime_error},
+            "sources": {"static": bool(compose), "runtime": runtime is not None, "runtime_error": runtime_error,
+                        "client_span_edges": len(client_spans or [])},
+            "manual_corrections": {"added": corrections.get("add", []), "removed": removed},
             "services": sorted(nodes.values(), key=lambda n: n["name"]),
             "edges": sorted(by_key.values(), key=lambda e: (e["from"], e["to"])),
             "journeys": journeys, "drift": drift}
@@ -185,7 +255,8 @@ def render_markdown(m: dict[str, Any]) -> str:
     for e in m["edges"]:
         if e["telemetry"]:
             continue
-        ev = "; ".join(x.get("ref") or f"jaeger calls={x.get('call_count')}" for x in e["evidence"])
+        ev = "; ".join(x.get("ref") or (f"jaeger calls={x.get('call_count')}" if "call_count" in x else
+                                        f"client spans={x.get('spans')} ({x.get('attribute')})") for x in e["evidence"])
         out.append(f"| {e['from']} | {e['to']} | {e.get('flow', '')} | {e['status']} | {ev} |")
     d = m["drift"]
     out += ["", "## Drift and gaps", "",
@@ -198,7 +269,28 @@ def render_markdown(m: dict[str, Any]) -> str:
     for n, j in m["journeys"].items():
         out.append(f"| {n} | {j['weight']} | {' → '.join(j['services'])} | "
                    f"{', '.join('→'.join(h) for h in j['hops_unverified']) or 'none'} |")
-    out += ["", "## Manual corrections", "", "_None yet. Record any correction here with the evidence used._", ""]
+    out += ["", "## Data flows per journey", "",
+            "Edges among each journey's services, in path order, with the kind of data flow. Async side effects "
+            "(events consumed later, off the request path) are listed separately.", ""]
+    edges = [e for e in m["edges"] if not e["telemetry"]]
+    for n, j in m["journeys"].items():
+        svcs = j["services"]
+        hops = [e for e in edges if e["from"] in svcs and e["to"] in svcs]
+        hops.sort(key=lambda e: (svcs.index(e["from"]), svcs.index(e["to"])))
+        # consumers of a broker the journey publishes to run later, off the request path
+        brokers = {e["to"] for e in hops if e["flow"].startswith("async")}
+        side = [e for e in edges if e["to"] in brokers and e["from"] not in svcs]
+        out.append(f"- **{n}**: " + ("; ".join(f"{e['from']} → {e['to']} ({e['flow']})" for e in hops) or "frontend only"))
+        if side:
+            out.append("  - async consumers (off the request path): " +
+                       "; ".join(f"{e['from']} ← {e['to']}" for e in side))
+    mc = m.get("manual_corrections", {})
+    out += ["", "## Manual corrections (`config/map-corrections.toml`)", ""]
+    out += [f"- added {c['from']} → {c['to']}: {c.get('reason', '')}" for c in mc.get("added", [])]
+    out += [f"- removed {c['from']} → {c['to']}: {c.get('reason', '')}" for c in mc.get("removed", [])]
+    if not mc.get("added") and not mc.get("removed"):
+        out.append("_None. Add `[[add]]`/`[[remove]]` entries with a reason and re-run `chaosctl map`._")
+    out.append("")
     return "\n".join(out)
 
 
@@ -209,7 +301,10 @@ def run(cfg: Config, http: Http, out_json: Path, out_md: Path) -> dict[str, Any]
         runtime = runtime_edges(cfg, http)
     except (HttpError, ValueError, KeyError) as exc:
         err = str(exc)
-    m = build_map(cfg, compose, runtime, err)
+    nodes, s_edges = static_edges(compose)
+    callers = sorted({e["from"] for e in s_edges if nodes.get(e["to"], {}).get("kind") == "datastore"})
+    spans = client_span_edges(cfg, http, callers) if runtime is not None else []
+    m = build_map(cfg, compose, runtime, err, spans, load_corrections(cfg))
     write_json(out_json, m)
     out_md.parent.mkdir(parents=True, exist_ok=True)
     out_md.write_text(render_markdown(m))

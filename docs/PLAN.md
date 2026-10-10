@@ -13,8 +13,9 @@ Docker Desktop's VM. Any FAIL → record in STATE.md and decide A-trimmed vs B w
 Verified from source (tag `3.1.0`, 2026-09-18) and Docker Hub: Apache-2.0; `otel/demo:3.1.0-*` images are amd64+arm64;
 compose memory limits ≈ 4.2 GB core + 3.0 GB observability + 1.1 GB full (limits, not measured usage);
 UI paths `/`, `/jaeger/`, `/loadgen/` on port 8080; Locust 2.44.4 autostarts 5 users.
-Static gaps already visible in compose: `cart` has no healthcheck and no `depends_on` on `valkey-cart`;
-`accounting`/`fraud-detection` have no healthcheck.
+Static gaps visible in compose (verified by running the mapper on the 3.1.0 compose files): `cart`, `accounting` and
+`fraud-detection` have no healthcheck; `accounting → astronomy-db` has no `depends_on`. (Correction: `cart` *does* declare
+`depends_on: valkey-cart`, in `compose.observability.yaml`; an earlier note here said otherwise.)
 
 ## 2. The 5 best differentiators (ranked by judge impact ÷ effort)
 | Rank | Differentiator | What judges see | Why it's unique | Effort | Day |

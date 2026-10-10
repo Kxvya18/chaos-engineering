@@ -18,6 +18,15 @@ _Last updated: 2026-10-10 — S1 deep-dive (crash → evidence → AI incident �
   `chaosctl explain`). Baseline captures container health plus a quality gate. The map labels data flows.
   Step 4 runs both slide examples (S1 crash, S2 network delay).
 
+- Day-1 quality pass:
+  - map verified against the real 3.1.0 compose files (regression fixture `tests/fixtures/`);
+  - datastore/Kafka edges confirmed via client spans;
+  - monitoring/operator-UI edges excluded from the customer path;
+  - manual corrections file;
+  - baseline warm-up and stability check;
+  - watchdog readiness gate and signal isolation;
+  - dashboard Day-1 checklist, map and baseline pages.
+
 ## Current blocker
 - No live evidence yet: everything below the simulation must run on the team Mac (no Docker daemon in the Claude cloud session).
 - Owner: switch GitHub default branch to `main`; provide `ANTHROPIC_API_KEY` (spend-capped) for runtime AI on Day 2.

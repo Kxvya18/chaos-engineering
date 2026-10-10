@@ -26,8 +26,9 @@ class RunAborted(Exception):
 def spawn_watchdog_process(cfg_path: Path, run_dir: Path) -> subprocess.Popen:
     log = (run_dir / "watchdog.log").open("a")
     env = {**os.environ, "CHAOS_CONFIG": str(cfg_path)}
+    # own session: a Ctrl-C/SIGHUP in the operator's terminal must not take the safety guard down with it
     return subprocess.Popen([sys.executable, "-m", "chaosctl", "watchdog", "--run-dir", str(run_dir)],
-                            stdout=log, stderr=subprocess.STDOUT, env=env)
+                            stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True)
 
 
 class Orchestrator:
@@ -90,6 +91,15 @@ class Orchestrator:
                       for tg, s in states.items())
         self.progress(f"[{phase:9} +{t - t0:5.1f}s] {' '.join(parts)} | {st}")
 
+    def _watchdog_ready(self, run_dir: Path, timeout_s: float = 15.0) -> bool:
+        end = self.clock() + timeout_s
+        while self.clock() < end:
+            if any(e["action"] == "watchdog_start" and e["source"] == "watchdog"
+                   for e in read_jsonl(run_dir / "events.jsonl")):
+                return True
+            self.sleep(0.2)
+        return False
+
     def _heartbeat(self, run_dir: Path, stop: threading.Event) -> None:
         while not stop.is_set():
             (run_dir / "heartbeat").write_text(f"{self.clock()}")
@@ -122,9 +132,10 @@ class Orchestrator:
         probes = ProbeRunner(self.journeys, writer, cfg.probes["interval_s"], clock=self.clock)
         hb_stop = threading.Event()
         hb = threading.Thread(target=self._heartbeat, args=(run_dir, hb_stop), daemon=True)
-        old_handler = None
+        old_handlers = {}
         if threading.current_thread() is threading.main_thread():
-            old_handler = signal.signal(signal.SIGINT, lambda *_: self._interrupted.set())
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                old_handlers[sig] = signal.signal(sig, lambda *_: self._interrupted.set())
 
         outcome: dict[str, Any] = {"status": "started"}
         injected: list[dict[str, Any]] = []
@@ -133,6 +144,9 @@ class Orchestrator:
             hb.start()
             probes.start()
             watchdog = self.watchdog_starter(run_dir)
+            if not self._watchdog_ready(run_dir):
+                raise RunAborted("watchdog_not_running")  # never inject without the independent safety guard
+            events.emit("watchdog_ready")
             events.emit("pre_start", seconds=cfg.steady_state["pre_s"])
             t_pre = self.clock()
             targets = [f["target"] for f in experiment["faults"] if f["fault_type"] != "traffic-spike"]
@@ -213,8 +227,8 @@ class Orchestrator:
                     watchdog.terminate()
             elif watchdog is not None and hasattr(watchdog, "join"):
                 watchdog.join(timeout=30)
-            if old_handler is not None:
-                signal.signal(signal.SIGINT, old_handler)
+            for sig, h in old_handlers.items():
+                signal.signal(sig, h)
             events.emit("run_end", outcome=outcome)
             events.close()
             write_json(run_dir / "outcome.json", outcome)
