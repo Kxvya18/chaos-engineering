@@ -237,21 +237,19 @@ def rule_based(cfg: Config, run_dir: Path, items: list[dict[str, Any]]) -> dict[
 
 def explain(cfg: Config, run_dir: Path, use_ai: bool = True) -> dict[str, Any]:
     items = build_items(cfg, run_dir)
-    meta: dict[str, Any] = {"method": "rule-based"}
+    meta: dict[str, Any] = {"method": "rule-based", "ai_unavailable": "AI not requested (--no-ai)"}
     result = None
     if use_ai:
         try:
-            data, ai_meta = ai.structured_call(SYSTEM, {"evidence": items,
-                                                        "pattern_catalog": {k: {"name": v["name"], "when": v["when"]}
-                                                                            for k, v in PATTERNS.items()}},
-                                               SCHEMA, effort="high")
-            problems = validate(data, items)
-            if problems:
-                meta = {"method": "rule-based", "ai_rejected": problems, "ai_meta": ai_meta}
-            else:
-                prose = " ".join([data["summary"], data["how"], data["why"]["root_cause"], data["customer_impact"]])
-                result = data
-                meta = {"method": "ai", "ai_meta": ai_meta, "unverified_numbers": unverified_numbers(prose, items)}
+            data, ai_meta = ai.validated_call(f"incident-{run_dir.name}", SYSTEM,
+                                              {"evidence": items,
+                                               "pattern_catalog": {k: {"name": v["name"], "when": v["when"]}
+                                                                   for k, v in PATTERNS.items()}},
+                                              SCHEMA, lambda d: "; ".join(validate(d, items)) or None,
+                                              cfg.artifacts_dir / "ai-cache", effort="high")
+            prose = " ".join([data["summary"], data["how"], data["why"]["root_cause"], data["customer_impact"]])
+            result = data
+            meta = {"method": "ai", "ai_meta": ai_meta, "unverified_numbers": unverified_numbers(prose, items)}
         except ai.AIUnavailable as exc:
             meta = {"method": "rule-based", "ai_unavailable": str(exc)}
     if result is None:

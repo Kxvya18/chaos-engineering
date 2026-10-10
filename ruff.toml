@@ -3,9 +3,9 @@ target-version = "py312"
 
 [lint]
 select = ["E", "F", "W", "I", "B", "FURB"]
-
 [lint.per-file-ignores]
 # HTML/CSS templates read better unwrapped
 "src/chaosctl/htmlreport.py" = ["E501"]
 "src/chaosctl/dashboard.py" = ["E501"]
 "src/chaosctl/pages.py" = ["E501"]
+"src/chaosctl/ui.py" = ["E501"]

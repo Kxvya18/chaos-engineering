@@ -54,7 +54,7 @@ def candidates(cfg: Config, dep_map: dict[str, Any]) -> list[dict[str, Any]]:
     for target in cfg.allowlist:
         is_ds = target in cfg.datastores
         expected = depmap.journeys_touching(cfg, target)
-        specs = [("container-stop", {"mode": "stop"}, 60)]
+        specs = [("container-stop", {"mode": "crash"}, 60)]  # real crash: exercises the restart policy
         if is_ds:
             specs += [("container-pause", {}, 45), ("cpu-throttle", {"cpus": 0.1}, 60),
                       ("network-delay", {"delay_ms": 300, "jitter_ms": 50}, 60)]

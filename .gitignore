@@ -6,3 +6,5 @@ __pycache__/
 state/
 runs/*/heartbeat
 runs/*/DONE
+site/
+artifacts/ai-cache/

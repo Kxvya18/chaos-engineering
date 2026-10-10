@@ -18,6 +18,8 @@ from . import (
     dashboard,
     depmap,
     faults,
+    fmea,
+    health,
     incident,
     planner,
     report,
@@ -106,7 +108,39 @@ def cmd_doctor(cfg: config.Config, args) -> int:
     add("baseline recorded", (cfg.artifacts_dir / "baseline.json").exists() or None, "artifacts/baseline.json")
     for name, st, detail in checks:
         print(f"[{st:4}] {name}: {detail}")
+    if getattr(args, "collect", False):
+        collect_diagnostics(cfg, ctx)
     return 1 if any(st == "FAIL" for _, st, _ in checks) else 0
+
+
+def collect_diagnostics(cfg: config.Config, ctx: faults.Ctx) -> None:
+    """Write evidence/diagnostics-<container>.txt for every unhealthy/non-running app container."""
+    out_dir = cfg.root / "evidence"
+    out_dir.mkdir(exist_ok=True)
+    snap = health.project_health(cfg, ctx.docker)
+    sick = [n for n, s in snap.items() if s["state"] != "running" or "unhealthy" in s["status"]]
+    if not sick:
+        print("diagnostics: no unhealthy containers")
+        return
+    for name in sick:
+        info = ctx.docker.inspect(name) or {}
+        st = info.get("State") or {}
+        hc = info.get("HostConfig") or {}
+        env = [e for e in (info.get("Config") or {}).get("Env") or [] if e.split("=")[0] in ("GOMEMLIMIT", "GOGC")]
+        logs = ctx.docker.run(["logs", "--tail", "200", name], check=False)
+        stats = ctx.docker.run(["stats", "--no-stream", "--format", "{{.MemUsage}} cpu={{.CPUPerc}}", name],
+                               check=False)
+        state = {k: st.get(k) for k in ("Status", "ExitCode", "OOMKilled", "StartedAt", "Restarting")}
+        lines = [f"# diagnostics for {name}", f"status: {snap[name]}", f"state: {json.dumps(state)}",
+                 f"memory limit bytes: {hc.get('Memory')}  nano_cpus: {hc.get('NanoCpus')}  env: {env}",
+                 f"restart count: {info.get('RestartCount')}", f"stats: {stats.stdout.strip()}", "",
+                 "## health-check log (last 5)"]
+        for h in ((st.get("Health") or {}).get("Log") or [])[-5:]:
+            lines.append(f"{h.get('Start')} exit={h.get('ExitCode')} {(h.get('Output') or '').strip()[:300]}")
+        lines += ["", "## last 200 log lines", logs.stdout, logs.stderr]
+        path = out_dir / f"diagnostics-{name}.txt"
+        path.write_text("\n".join(lines))
+        print(f"diagnostics: {path}")
 
 
 def cmd_setup(cfg: config.Config, args) -> int:
@@ -157,14 +191,7 @@ def cmd_baseline(cfg: config.Config, args) -> int:
 
 
 def project_health(cfg: config.Config, ctx: faults.Ctx) -> dict[str, Any]:
-    res = ctx.docker.run(["ps", "-a", "--filter", f"label=com.docker.compose.project={cfg.sandbox['compose_project']}",
-                          "--format", "{{.Names}}\t{{.State}}\t{{.Status}}"], check=False)
-    out = {}
-    for row in res.stdout.strip().splitlines():
-        parts = row.split("\t")
-        if len(parts) >= 3:
-            out[parts[0]] = {"state": parts[1], "status": parts[2]}
-    return out
+    return health.project_health(cfg, ctx.docker)
 
 
 def _history(cfg: config.Config) -> list[dict[str, Any]]:
@@ -180,20 +207,69 @@ def _history(cfg: config.Config) -> list[dict[str, Any]]:
 
 def cmd_plan(cfg: config.Config, args) -> int:
     out = Path(args.out)
-    plan = planner.make_plan(cfg, cfg.artifacts_dir / "dependency-map.json", cfg.artifacts_dir / "baseline.json",
-                             _history(cfg), use_ai=not args.no_ai)
-    planner.save(plan, out)
-    m = plan["meta"]
-    print(f"plan -> {out} (status={m['status']}, planner={m['planner']['method']}, sha256={m['sha256'][:12]})")
-    for k in ("ai_unavailable", "ai_rejected"):
-        if k in m["planner"]:
-            print(f"  note: {k}: {m['planner'][k]}")
-    for p in m["problems"]:
-        print(f"  problem: {p}")
-    for e in plan["experiments"]:
-        f = e["faults"][0]
-        print(f"  #{e['rank']} {e['id']}: {f['fault_type']} {f['target']} {f['params']} {f['duration_s']}s")
-        print(f"      reason: {e['reason']}")
+    res = fmea.run(cfg, use_ai=not args.no_ai)  # AI writes the FMEA and selects what to inject
+    plan = res["plan"]
+    if out.resolve() != (cfg.artifacts_dir / "experiment-plan.json").resolve():
+        planner.save(plan, out)
+    print_fmea(res["fmea"])
+    return 0
+
+
+def print_fmea(f: dict[str, Any], top: int = 8) -> None:
+    m = f["meta"]
+    who = f"AI ({m['ai_meta'].get('model_served')})" if m["method"] == "ai" else \
+        f"rule-based (AI not used: {m.get('ai_unavailable') or m.get('ai_rejected')})"
+    print(f"\nFMEA by {who} -> artifacts/fmea.json, docs/FMEA.md")
+    print(f"  {'component':16} {'failure mode':22} {'S':>2} {'O':>2} {'D':>2} {'RPN':>4}   measured S/D/RPN")
+    for r in f["rows"][:top]:
+        me = r.get("measured") or {}
+        meas = f"{me['severity']}/{me['detection']}/{me['rpn']}" if me else "-"
+        print(f"  {r['component']:16} {r['failure_mode']:22} {r['severity']:>2} {r['occurrence']:>2} {r['detection']:>2} "
+              f"{r['rpn']:>4}   {meas}")
+    print("\n  selected for injection:")
+    for s in f["selected"]:
+        print(f"   {s['rank']}. {s['candidate_id']}: {s['reason']}")
+    for p in f["problems"]:
+        print(f"  NOT EXECUTABLE: {p}")
+
+
+def cmd_autopilot(cfg: config.Config, args) -> int:
+    """AI decides what to break (FMEA), the safety engine injects, results are measured and explained."""
+    base_path = cfg.artifacts_dir / "baseline.json"
+    if not base_path.exists():
+        print("refusing: no baseline. First prove the system works: `chaosctl baseline`")
+        return 2
+    base = read_json(base_path)
+    if base.get("quality") and not base["quality"]["pass"]:
+        print("refusing: the baseline was REJECTED - the system is not healthy yet, so there is nothing to experiment on")
+        return 2
+    res = fmea.run(cfg, use_ai=not args.no_ai)
+    print_fmea(res["fmea"])
+    plan = res["plan"]
+    planner.verify_plan(plan)
+    exps = plan["experiments"][: args.max]
+    if not args.yes:
+        ans = input(f"\nInject these {len(exps)} failure(s) one at a time, with all safety controls on? [y/N] ")
+        if ans.strip().lower() not in ("y", "yes"):
+            print("stopped: nothing injected")
+            return 0
+    ctx = _ctx(cfg)
+    for exp in exps:
+        print(f"\n==================== {exp['id']} ====================\nwhy: {exp['reason']}\nhypothesis: {exp['hypothesis']}")
+        orch = Orchestrator(cfg, ctx, Journeys(cfg, ctx.http).all(), base, progress=print, use_ai=not args.no_ai,
+                            explain=True)
+        try:
+            run_dir = orch.run(exp, {"path": "artifacts/experiment-plan.json", "sha256": plan["meta"]["sha256"]})
+        except safety.SafetyError as exc:
+            print(f"REFUSED by safety policy: {exc}")
+            return 3
+        a = read_json(run_dir / "analysis.json")
+        print(f"result: {a['outcome']} impacted={a['impacted_journeys']} restore={a.get('time_to_restore_s')} s")
+        if a["outcome"] in ("kill_switch", "interrupted"):
+            print("stopping autopilot: operator stopped the run")
+            break
+    print_fmea(read_json(cfg.artifacts_dir / "fmea.json"))
+    print("\nDashboard: chaosctl dashboard -> http://127.0.0.1:8090/fmea")
     return 0
 
 
@@ -242,6 +318,12 @@ def cmd_run(cfg: config.Config, args) -> int:
           f"time_to_restore={a.get('time_to_restore_s')}s self_healed={a.get('self_healed')}")
     for c in a.get("checks", []):
         print(f"check {c['check']}: {c['intact']}/{c['seeded']} intact, {c['lost']} LOST")
+    bs = a.get("health_blind_spot")
+    if bs and bs["customer_impact_s"]:
+        print(f"HEALTH-CHECK BLIND SPOT: customers impacted {bs['customer_impact_s']:.0f} s, of which "
+              f"{bs['silent_impact_s']:.0f} s while every container looked healthy "
+              f"(platform first noticed at {bs['platform_first_not_green_at_s']} s, customers at "
+              f"{bs['customers_first_failed_at_s']} s)")
     if (run_dir / "incident.json").exists():
         inc = read_json(run_dir / "incident.json")
         r = inc["analysis"]
@@ -280,6 +362,14 @@ def cmd_scenarios(cfg: config.Config, args) -> int:
         f = s["faults"][0]
         print(f"{s['name']:20} {s['id']}: {f['fault_type']} {f['target']} {f.get('params')} {f['duration_s']}s")
         print(f"{'':20} hypothesis: {s['hypothesis']}")
+    return 0
+
+
+def cmd_export_site(cfg: config.Config, args) -> int:
+    from .export import export
+
+    files = export(cfg, Path(args.out))
+    print(f"static site: {len(files)} pages -> {args.out}/index.html (open it in a browser, or publish the folder)")
     return 0
 
 
@@ -347,13 +437,18 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="chaosctl", description=__doc__)
     p.add_argument("--config", default=None, help="path to sandbox.toml (default config/sandbox.toml)")
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("doctor", help="check sandbox, app, tools and safety state")
+    dr = sub.add_parser("doctor", help="check sandbox, app, tools and safety state")
+    dr.add_argument("--collect", action="store_true", help="save diagnostics of unhealthy containers to evidence/")
     sub.add_parser("setup", help="build the netem helper image")
     sub.add_parser("map", help="build evidence-graded dependency map")
     b = sub.add_parser("baseline", help="measure steady state under normal load")
     b.add_argument("--duration", type=float, default=300)
     b.add_argument("--warmup", type=float, default=15, help="seconds probed but excluded from the numbers")
-    pl = sub.add_parser("plan", help="AI-ranked (or rule-based) experiment plan")
+    ap = sub.add_parser("autopilot", help="AI writes the FMEA, picks failures, engine injects safely, results measured")
+    ap.add_argument("--max", type=int, default=2, help="max experiments to run (default 2)")
+    ap.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    ap.add_argument("--no-ai", action="store_true", help="rule-based FMEA and analysis")
+    pl = sub.add_parser("plan", help="AI FMEA: rate failure modes, select what to inject (no injection)")
     pl.add_argument("--no-ai", action="store_true")
     pl.add_argument("--out", default="artifacts/experiment-plan.json")
     r = sub.add_parser("run", help="run one experiment from the plan, or the tripwire")
@@ -374,6 +469,8 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("before")
     cp.add_argument("after")
     sub.add_parser("scenarios", help="list pre-registered scenarios")
+    ex2 = sub.add_parser("export-site", help="static snapshot of the dashboard with all evidence (for deployment)")
+    ex2.add_argument("--out", default="site")
     db = sub.add_parser("dashboard", help="web dashboard: live status, reports, kill switch")
     db.add_argument("--host", default="127.0.0.1")
     db.add_argument("--port", type=int, default=8090)
@@ -395,7 +492,8 @@ def build_parser() -> argparse.ArgumentParser:
 COMMANDS = {"doctor": cmd_doctor, "setup": cmd_setup, "map": cmd_map, "baseline": cmd_baseline, "plan": cmd_plan,
             "run": cmd_run, "kill": cmd_kill, "reconcile": cmd_reconcile, "status": cmd_status,
             "analyze": cmd_analyze, "report": cmd_report, "selftest": cmd_selftest, "watchdog": cmd_watchdog,
-            "explain": cmd_explain, "compare": cmd_compare, "scenarios": cmd_scenarios, "dashboard": cmd_dashboard}
+            "explain": cmd_explain, "autopilot": cmd_autopilot, "compare": cmd_compare, "scenarios": cmd_scenarios,
+            "dashboard": cmd_dashboard, "export-site": cmd_export_site}
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -49,7 +49,7 @@ def test_ai_selection_validation(cfg):
 
 
 def test_ai_plan_used_when_valid(cfg, monkeypatch):
-    def fake_call(system, payload, schema, effort="medium", max_tokens=16000):
+    def fake_call(system, payload, schema, effort="medium", max_tokens=16000, **kw):
         ids = [c["candidate_id"] for c in payload["candidates"]]
         assert "traffic-spike:load-generator" in ids
         sel = [{"candidate_id": i, "rank": n + 1, "reason": "fan-in evidence", "hypothesis": "h"}

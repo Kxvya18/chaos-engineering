@@ -86,3 +86,25 @@ def test_stop_rollback_tolerates_restart_policy(ctx):
     res = faults.rollback(ctx, entry("container-stop", "checkout"))
     assert res["ok"] and res["action"] == "none"
     assert ["start", "checkout"] not in ctx.docker.calls
+
+
+def test_rollback_is_verified_against_pre_injection_snapshot(ctx):
+    for ftype, params in (("container-stop", {"mode": "stop"}), ("cpu-throttle", {"cpus": 0.1}),
+                          ("network-delay", {"delay_ms": 200}), ("container-pause", {})):
+        e = entry(ftype, "quote", params)
+        e["desired"] = faults.snapshot(ctx, e)
+        e["state"] = faults.inject(ctx, e)
+        res = faults.rollback_verified(ctx, e)
+        assert res["verified"] and res["attempts"] == 1, (ftype, res)
+        assert all(c["ok"] for c in res["history"][-1]["checks"])
+
+
+def test_rollback_escalates_when_undo_does_not_restore(ctx):
+    e = entry("container-stop", "email")
+    e["desired"] = faults.snapshot(ctx, e)
+    faults.inject(ctx, e)
+    ctx.docker.fail_on.add("start")  # the normal undo keeps failing
+    res = faults.rollback_verified(ctx, e)
+    ctx.docker.fail_on.clear()
+    assert res["verified"] and res["attempts"] == 3
+    assert res["history"][-1]["result"]["action"] == "escalated: docker restart"

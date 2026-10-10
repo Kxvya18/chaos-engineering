@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import analysis, checks, evidence, faults, incident, metrics, safety
+from . import analysis, checks, evidence, faults, fmea, health, incident, metrics, safety
 from .config import Config
 from .probes import JourneyFn, ProbeRunner
 from .registry import Registry
@@ -87,6 +87,8 @@ class Orchestrator:
         states = {tg: self.ctx.docker.state(tg) for tg in targets}
         if events is not None and states:
             events.emit("target_state", states=states)
+        if events is not None:  # what an infrastructure dashboard would show right now
+            events.emit("platform_health", **health.verdict(self.cfg, health.project_health(self.cfg, self.ctx.docker)))
         st = " ".join(f"{tg}={s['status']}{'/' + s['health'] if s.get('health') else ''}(restarts={s['restart_count']})"
                       for tg, s in states.items())
         self.progress(f"[{phase:9} +{t - t0:5.1f}s] {' '.join(parts)} | {st}")
@@ -171,6 +173,7 @@ class Orchestrator:
                 entry = {"fault_id": f"{run_id}-f{i}", "run_id": run_id, "fault_type": f["fault_type"],
                          "target": f["target"], "params": f.get("params") or {}, "duration_s": f["duration_s"],
                          "injected_at": t, "expires_at": t + f["duration_s"], "state": {}}
+                entry["desired"] = faults.snapshot(self.ctx, entry)  # the healthy state rollback must restore
                 self.registry.add(entry)  # registered BEFORE inject: a crash mid-inject is still rolled back
                 events.emit("inject_start", fault=entry, target_state=self.ctx.docker.state(f["target"])
                             if f["fault_type"] != "traffic-spike" else None)
@@ -194,8 +197,11 @@ class Orchestrator:
             outcome = {"status": "safety_error", "error": str(exc)}
         finally:
             for entry in reversed(injected):
-                res = faults.rollback(self.ctx, entry)
+                res = faults.rollback_verified(self.ctx, entry)
                 events.emit("rollback", fault_id=entry["fault_id"], result=res)
+                self.progress(f"rollback {'VERIFIED' if res.get('verified') else 'NOT VERIFIED'} after "
+                              f"{res.get('attempts')} attempt(s): " + "; ".join(
+                                  f"{c['check']}={'ok' if c['ok'] else 'FAIL'}" for c in res["history"][-1]["checks"]))
                 if res["ok"]:
                     self.registry.remove(entry["fault_id"])
             # anything the watchdog or a crash left behind for this run
@@ -240,6 +246,12 @@ class Orchestrator:
                     if self.explain:
                         self.progress("incident analysis (AI if enabled, else rule-based) ...")
                         incident.explain(cfg, run_dir, use_ai=self.use_ai)
+                    row = fmea.update_from_run(cfg, run_dir, cfg.artifacts_dir / "fmea.json")
+                    if row:
+                        me = row["measured"]
+                        self.progress(f"FMEA {row['component']} / {row['failure_mode']}: predicted S{row['severity']} "
+                                      f"D{row['detection']} RPN {row['rpn']}  ->  measured S{me['severity']} "
+                                      f"D{me['detection']} RPN {me['rpn']}")
             except Exception as exc:  # never mask the run outcome; re-run `chaosctl analyze/explain` later
                 (run_dir / "analysis_error.txt").write_text(f"{type(exc).__name__}: {exc}\n")
         return run_dir

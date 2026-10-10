@@ -53,7 +53,9 @@ scripts/m1.sh 5
 scripts/m1.sh 6
 ```
 1 app running · 2 dependency + data-flow map · 3 baseline (error rate, latency, health, quality gate) ·
-4 two failures: container crash (S1) and network delay (S2) · 5 automatic stop (tripwire) + kill switch · 6 dashboard demo.
+4 **AI-driven injection**: the AI writes an FMEA, picks the failures, the engine injects them safely and measures
+predicted vs real (`chaosctl autopilot`) · 5 automatic stop (tripwire) + kill switch · 6 dashboard demo
+(checklist, live blast radius, map, baseline, AI FMEA, runs).
 Pass criteria and evidence for every step: **[`docs/MILESTONE1.md`](docs/MILESTONE1.md)**. Plain words: [`docs/EXPLAINED.md`](docs/EXPLAINED.md).
 
 ## 4. Day-2 path (later): AI planning, ≥ 3 failure types, AI findings

@@ -1,16 +1,16 @@
 # Demo scripts
 
-## Day-1 checkpoint demo (≈ 2 min, no AI)
-Have open: dashboard (`scripts/m1.sh 6`) and a terminal. Run everything once beforehand so all six checklist rows are ✓.
+## Day-1 checkpoint demo (≈ 2.5 min)
+Have open: dashboard (`scripts/m1.sh 6`) and a terminal. Navigate with the numbered tabs or the **Next** button. Run the runbook once beforehand so all checklist rows are ✓.
 
 | Time | Show | Say |
 |---|---|---|
-| 0:00–0:15 | Dashboard home: **Day-1 checklist** (6 ✓ rows) | "Every row comes from evidence files and live container state, not ticked by hand." |
-| 0:15–0:35 | `/map` | "Services, dependencies and data flows, left to right: requests in blue, Kafka events in orange, databases in green. Solid lines are confirmed by config *and* live traces. It also found gaps: three services with no health check." |
-| 0:35–0:55 | `/baseline` | "Five minutes of normal behaviour under steady load: error rate, p50/p95/p99 and container health at start and end. The steady state is accepted only if every quality check passes." |
-| 0:55–1:30 | Terminal: `chaosctl run --scenario cart-store-crash` (live lines), then its run page | "We crash the cart store. Cart and checkout go red, the other five journeys stay green, so the blast radius is contained. Docker restarts it, and we measure time to restore. The cart check shows whether customers' carts survived." |
-| 1:30–1:50 | Tripwire run page (`abort=A1…`) | "Safety: when damage spreads beyond the declared blast radius, the independent watchdog stops the experiment and undoes it by itself." |
-| 1:50–2:00 | Dashboard KILL SWITCH button | "And one button, or `chaosctl kill`, rolls back everything immediately." |
+| 0:00–0:15 | **Overview**: key findings + Day-1 checkpoint | "Every row comes from evidence, not ticked by hand. The system was proven healthy before we broke anything." |
+| 0:15–0:35 | **System map** + **Normal behaviour** | "Services and data flows, confirmed by live traces. Five minutes of normal behaviour: error rate, latency, container health. Steady state accepted." |
+| 0:35–1:05 | **AI test plan** | "Bosch plans safety with FMEA. Our AI wrote one for this shop: how each part can fail, how bad, how likely, would we notice. Then it picked what to break first, and why." |
+| 1:05–1:45 | Terminal `chaosctl autopilot` + **Live test** map turning red/orange | "The safety engine injects the AI's choice. Watch the blast radius spread on the live map. Only the expected journeys fail." |
+| 1:45–2:15 | **Results** → open the test: KPIs, **hidden outage**, where/how/why, fixes | "Customers failed for N seconds while every health check said green. That's the blind spot, measured. The FMEA row updates: predicted vs measured." |
+| 2:15–2:30 | Tripwire run + KILL SWITCH | "If damage spreads beyond what we allowed, the watchdog stops it by itself. One button undoes everything." |
 
 # Final demo (≤ 3 minutes, Day 2)
 

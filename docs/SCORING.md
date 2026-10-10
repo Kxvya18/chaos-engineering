@@ -44,3 +44,19 @@ and its selection is rejected if it invents an id, has fewer than 3 fault types,
 - The weights are judgement calls for a demo shop, not measured business value.
 - Probes come from one client host. They measure customer-visible behaviour through `frontend-proxy`, not internal SLIs.
 - On Docker Desktop, network faults act inside the Linux VM. Absolute latencies differ from production hardware.
+
+## FMEA ratings: predicted (AI) vs measured (chaos run) — `fmea.py`
+Scales use the usual FMEA convention, 1 = best and 10 = worst; RPN = S × O × D (classic IEC 60812 prioritisation;
+the AIAG-VDA 2019 Action Priority table is **not** implemented).
+- **Predicted** S/O/D come from the AI. Code checks they are integers 1–10 and that every candidate id exists. Without AI,
+  `rule_based_row()` applies:
+  - S = 10 × the highest journey weight (−2 for latency/CPU faults; 10 for the cart store);
+  - O = 3, +2 if the memory limit is ≤ 32 MiB, +1 if there's no health check, +1 for a datastore;
+  - D by fault type: crash 3 (5 without a health check), hang 5/8, latency 9, CPU 8, traffic surge 7.
+- **Measured** after each run:
+  - S = ⌈severity score / 10⌉, or 10 if any customer data was lost;
+  - D = round(10 − 8 × health-check coverage %), where coverage = share of customer-impact time during which the
+    platform was *not* all-green; D = 1 if customers saw no impact;
+  - O stays as predicted, because one experiment can't measure frequency.
+- The verdict on the dashboard compares measured RPN with predicted RPN: more than 50 higher = "underestimated",
+  more than 50 lower = "overestimated", otherwise "confirmed".

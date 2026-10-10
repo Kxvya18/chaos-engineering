@@ -50,6 +50,13 @@ class FakeDocker:
         cmd = a[0]
         if cmd in self.fail_on:
             return Result(1, "", f"simulated failure of {cmd}")
+        if cmd == "restart":
+            c = self.containers.get(a[-1])
+            if not c:
+                return Result(1, "", f"No such container: {a[-1]}")
+            c["status"] = "running"
+            self.netem.pop(a[-1], None)
+            return ok
         if cmd in ("stop", "kill", "start", "pause", "unpause"):
             name = a[-1]
             if name in self.helpers:
@@ -115,6 +122,18 @@ class FakeDocker:
                 return Result(2, "", "Error: Cannot delete qdisc with handle of zero.")
             return ok
         if cmd == "ps":
+            if any("com.docker.compose.project" in x for x in a):
+                rows = []
+                for n, c in self.containers.items():
+                    if c["status"] == "running":
+                        since = time.time() - self.crash_times.get(n, 0)
+                        st = "Up 2 seconds (health: starting)" if since < 2 else "Up 9 minutes (healthy)"
+                    elif c["status"] == "paused":
+                        st = "Up 9 minutes (Paused)"
+                    else:
+                        st = f"Exited ({c.get('exit_code', 0)}) 1 second ago"
+                    rows.append(f"{n}\t{c['status']}\t{st}")
+                return Result(0, "\n".join(rows) + "\n", "")
             return Result(0, "\n".join(self.helpers) + "\n", "")
         if cmd == "context":
             if a[1] == "show":
