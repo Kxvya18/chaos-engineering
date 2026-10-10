@@ -1,6 +1,21 @@
 # What we built, in plain words
 
-> **Day 1 vs Day 2.** Day 1 (now) is: app running, map, baseline, inject a crash and a network delay safely,
+## The novel part: an AI-written FMEA, checked by real experiments
+Bosch engineers use **FMEA** (Failure Mode and Effects Analysis) to plan safety. For each part they ask "how can it fail?",
+"how bad would it be?" (Severity), "how likely?" (Occurrence) and "would we notice?" (Detection). Each is scored 1–10,
+and the risk number RPN = S × O × D decides what to fix first. Normally an FMEA is a spreadsheet that nobody tests.
+
+**Our system closes the loop:**
+1. The **AI writes the FMEA** for the shop, using the map (who depends on whom, memory limits, missing health checks)
+   and the baseline.
+2. The **AI picks** the most dangerous or most informative failures to try first, and says why.
+3. The **safety engine injects** them for real, within limits, with a watchdog and a kill switch.
+4. We **measure** what actually happened. Severity comes from real customer impact. Detection comes from the
+   **health-check blind spot**: how long customers were failing while every container still said "healthy".
+5. The FMEA shows **predicted vs measured**. Where the AI, or a human engineer, guessed wrong, it's visible.
+
+> **Day 1 vs Day 2.** The AI now *chooses* what to break (team decision). Deeper AI reporting stays Day 2.
+> **Earlier note:** Day 1 (now) is: app running, map, baseline, inject a crash and a network delay safely,
 > watch the impact, and prove the automatic stop and kill switch. The AI parts below (incident analyst, fixes) belong to
 > Day 2. They are built and tested in simulation, but they are **off** in the Day-1 run.
 

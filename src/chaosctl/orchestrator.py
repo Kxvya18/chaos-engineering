@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import analysis, checks, evidence, faults, incident, metrics, safety
+from . import analysis, checks, evidence, faults, fmea, health, incident, metrics, safety
 from .config import Config
 from .probes import JourneyFn, ProbeRunner
 from .registry import Registry
@@ -87,6 +87,8 @@ class Orchestrator:
         states = {tg: self.ctx.docker.state(tg) for tg in targets}
         if events is not None and states:
             events.emit("target_state", states=states)
+        if events is not None:  # what an infrastructure dashboard would show right now
+            events.emit("platform_health", **health.verdict(self.cfg, health.project_health(self.cfg, self.ctx.docker)))
         st = " ".join(f"{tg}={s['status']}{'/' + s['health'] if s.get('health') else ''}(restarts={s['restart_count']})"
                       for tg, s in states.items())
         self.progress(f"[{phase:9} +{t - t0:5.1f}s] {' '.join(parts)} | {st}")
@@ -240,6 +242,12 @@ class Orchestrator:
                     if self.explain:
                         self.progress("incident analysis (AI if enabled, else rule-based) ...")
                         incident.explain(cfg, run_dir, use_ai=self.use_ai)
+                    row = fmea.update_from_run(cfg, run_dir, cfg.artifacts_dir / "fmea.json")
+                    if row:
+                        me = row["measured"]
+                        self.progress(f"FMEA {row['component']} / {row['failure_mode']}: predicted S{row['severity']} "
+                                      f"D{row['detection']} RPN {row['rpn']}  ->  measured S{me['severity']} "
+                                      f"D{me['detection']} RPN {me['rpn']}")
             except Exception as exc:  # never mask the run outcome; re-run `chaosctl analyze/explain` later
                 (run_dir / "analysis_error.txt").write_text(f"{type(exc).__name__}: {exc}\n")
         return run_dir

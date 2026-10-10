@@ -24,7 +24,10 @@ EXTRA_CSS = """
 @media (prefers-color-scheme:dark){:root:where(:not([data-theme="light"])){--series-2:#d95926;--series-3:#199e70}}
 :root[data-theme="dark"]{--series-2:#d95926;--series-3:#199e70}
 .node rect{fill:var(--surface-1);stroke:var(--border);stroke-width:1.5}.node.datastore rect{stroke:var(--text-secondary);stroke-dasharray:4 2}
-.node text{fill:var(--text-primary);font-size:11px}.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;margin:6px 0}
+.node text{fill:var(--text-primary);font-size:11px}
+.node.fault rect,.node.down rect{stroke:var(--critical);stroke-width:3;stroke-dasharray:none}
+.node.impacted rect{stroke:var(--serious);stroke-width:3;stroke-dasharray:none}
+.node.fault text,.node.down text{fill:var(--critical);font-weight:700}.node.impacted text{font-weight:700}.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;margin:6px 0}
 .sw{display:inline-block;width:26px;height:0;border-top:3px solid;vertical-align:middle;margin-right:6px}
 nav a{margin-right:14px}
 """
@@ -33,7 +36,7 @@ nav a{margin-right:14px}
 def page(title: str, body: str) -> str:
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{esc(title)}</title><style>{CSS}{EXTRA_CSS}</style></head><body><main>
-<nav class="small"><a href="/">Day-1 checklist</a><a href="/map">Dependency map</a><a href="/baseline">Baseline</a><a href="/runs">Runs</a></nav>
+<nav class="small"><a href="/">Day-1 checklist</a><a href="/live">Live blast radius</a><a href="/map">Dependency map</a><a href="/baseline">Baseline</a><a href="/fmea">AI FMEA</a><a href="/runs">Runs</a></nav>
 {body}</main></body></html>"""
 
 
@@ -86,8 +89,14 @@ def milestone1(cfg: Config, health: Callable[[], dict[str, Any]], storefront: Ca
                      "not yet: run `chaosctl baseline`", "/baseline"))
     runs = _runs(cfg)
     failures = [a for a in runs if a["timeline"].get("inject") and not a["experiment_id"].startswith("TRIPWIRE")]
+    fp = cfg.artifacts_dir / "fmea.json"
+    chooser = ""
+    if fp.exists():
+        fm = read_json(fp)["meta"]
+        chooser = ("chosen by AI FMEA (" + str((fm.get("ai_meta") or {}).get("model_served")) + "); "
+                   if fm["method"] == "ai" else "chosen by rule-based FMEA (AI not available); ")
     rows.append(("4", "First failure injection", "At least one failure triggered and observed", bool(failures),
-                 "; ".join(f"{a['experiment_id']}: impacted {', '.join(a['impacted_journeys']) or 'none'}, restore "
+                 chooser + "; ".join(f"{a['experiment_id']}: impacted {', '.join(a['impacted_journeys']) or 'none'}, restore "
                            f"{a.get('time_to_restore_s')} s" for a in failures[:3]) or "not yet",
                  f"/runs/{failures[0]['run_id']}/" if failures else "/runs"))
     trip = [a for a in runs if a["experiment_id"].startswith("TRIPWIRE") and (a.get("abort") or {}).get("by") == "watchdog"]
@@ -145,7 +154,9 @@ def _layers(nodes: list[str], edges: list[dict[str, Any]]) -> list[list[str]]:
     return [sorted(layers[k]) for k in sorted(layers)]
 
 
-def map_svg(m: dict[str, Any]) -> str:
+def map_svg(m: dict[str, Any], overlay: dict[str, str] | None = None) -> str:
+    """overlay: node -> 'fault' | 'down' | 'impacted' (live blast radius). Marked by border AND a text prefix."""
+    overlay = overlay or {}
     edges = [e for e in m["edges"] if not e.get("telemetry")]
     names = sorted({e["from"] for e in edges} | {e["to"] for e in edges})
     kinds = {s["name"]: s.get("kind") for s in m.get("services", [])}
@@ -173,11 +184,15 @@ def map_svg(m: dict[str, Any]) -> str:
         parts.append(f'<path d="M{sx:.0f},{sy:.0f} C{(sx + tx) / 2:.0f},{sy:.0f} {(sx + tx) / 2:.0f},{ty:.0f} {tx:.0f},{ty:.0f}" '
                      f'fill="none" stroke="{colour}" stroke-width="2"{dash} marker-end="url(#arr)">'
                      f'<title>{esc(e["from"])} → {esc(e["to"])}: {esc(e.get("flow"))}, {esc(e["status"])}</title></path>')
+    prefix = {"fault": "✕ ", "down": "✕ ", "impacted": "! "}
     for n, (x, y) in pos.items():
         cls = "node datastore" if kinds.get(n) == "datastore" else "node"
+        state = overlay.get(n)
+        if state:
+            cls += f" {state}"
         parts.append(f'<g class="{cls}"><rect x="{x}" y="{y}" width="{bw}" height="{bh}" rx="6"/>'
-                     f'<text x="{x + bw / 2}" y="{y + bh / 2 + 4}" text-anchor="middle">{esc(n)}</text>'
-                     f'<title>{esc(n)} ({esc(kinds.get(n))})</title></g>')
+                     f'<text x="{x + bw / 2}" y="{y + bh / 2 + 4}" text-anchor="middle">{prefix.get(state, "")}{esc(n)}</text>'
+                     f'<title>{esc(n)} ({esc(kinds.get(n))}){": " + state if state else ""}</title></g>')
     parts.append("</svg>")
     return "".join(parts)
 
@@ -251,3 +266,72 @@ load: Locust {esc((b.get('load') or {}).get('state'))}, {esc((b.get('load') or {
     return page("Baseline", body)
 
 
+
+
+# ---------------------------------------------------------------- live blast radius
+def live_overlay(cfg: Config, active_targets: list[str], snapshot: dict[str, dict[str, str]],
+                 failing_journeys: list[str]) -> dict[str, str]:
+    overlay: dict[str, str] = {}
+    for j in failing_journeys:
+        for s in cfg.journeys[j].services if j in cfg.journeys else []:
+            overlay[s] = "impacted"
+    for n, s in snapshot.items():
+        if s.get("state") != "running" or "unhealthy" in s.get("status", ""):
+            overlay[n] = "down"
+    for t in active_targets:
+        overlay[t] = "fault"
+    return overlay
+
+
+def live_fragment(cfg: Config, overlay: dict[str, str], journeys: dict[str, dict[str, int]], run_id: str | None,
+                  platform_green: bool | None) -> str:
+    mp = cfg.artifacts_dir / "dependency-map.json"
+    svg = map_svg(read_json(mp), overlay) if mp.exists() else "<p>Run <code>chaosctl map</code> first.</p>"
+    tiles = "".join(
+        f'<div class="card kpi"><div class="v">{v["ok"]}/{v["n"]}</div><div class="l">{esc(j)} '
+        f'{TICK + " OK" if v["ok"] == v["n"] else CROSS + " DOWN" if v["ok"] == 0 else WARN.replace("warn", "degraded")}</div></div>'
+        for j, v in sorted(journeys.items()))
+    plat = ("n/a" if platform_green is None else
+            '<span class="status ok">✓ all containers healthy</span>' if platform_green else
+            '<span class="status bad">✕ a container is down/unhealthy</span>')
+    blind = ""
+    if platform_green and any(v["ok"] < v["n"] for v in journeys.values()):
+        blind = '<div class="card"><span class="status warn">● HEALTH-CHECK BLIND SPOT</span> customers are failing while every container reports healthy</div>'
+    return f"""<p class="small">{'Run <code>' + esc(run_id) + '</code>' if run_id else 'No run in progress'} · platform view: {plat}</p>
+{blind}<div class="kpis">{tiles}</div>
+<div class="legend"><span>✕ red border = fault target / container down</span><span>! orange border = on a failing customer journey</span></div>
+<div class="card wrap">{svg}</div>"""
+
+
+# ---------------------------------------------------------------- FMEA
+def fmea_html(cfg: Config) -> str:
+    fp = cfg.artifacts_dir / "fmea.json"
+    if not fp.exists():
+        return page("AI FMEA", "<h1>AI FMEA</h1><p>Not yet: run <code>chaosctl plan</code> or <code>chaosctl autopilot</code>.</p>")
+    f = read_json(fp)
+    m = f["meta"]
+    who = (f"AI · {esc(m['ai_meta'].get('model_served'))}" if m["method"] == "ai"
+           else f"rule-based fallback ({esc(m.get('ai_unavailable') or m.get('ai_rejected'))})")
+    rows = []
+    for r in f["rows"]:
+        me = r.get("measured")
+        if me:
+            gap = me["rpn"] - r["rpn"]
+            verdict = (f"{CROSS} underestimated" if gap > 50 else f"{WARN} overestimated" if gap < -50 else f"{TICK} confirmed")
+            meas = f"<td class='num'>{me['severity']}</td><td class='num'>{me['detection']}</td><td class='num'><b>{me['rpn']}</b></td>" \
+                   f"<td>{verdict}<br><a class='small' href='/runs/{esc(me['run_id'])}/'>run</a></td>"
+        else:
+            meas = "<td class='num'>—</td><td class='num'>—</td><td class='num'>—</td><td class='small muted'>not injected</td>"
+        rows.append(f"<tr><td><b>{esc(r['component'])}</b></td><td>{esc(r['failure_mode'])}</td><td class='small'>{esc(r['effect'])}"
+                    f"<br><span class='muted'>{esc(r['rationale'])}</span></td><td class='num'>{r['severity']}</td>"
+                    f"<td class='num'>{r['occurrence']}</td><td class='num'>{r['detection']}</td><td class='num'><b>{r['rpn']}</b></td>{meas}</tr>")
+    sel = "".join(f"<li><b>{esc(s['candidate_id'])}</b> — {esc(s['reason'])}<br><span class='small muted'>Hypothesis: "
+                  f"{esc(s['hypothesis'])}</span></li>" for s in f["selected"])
+    body = f"""<h1>FMEA — AI-generated, validated by chaos experiments</h1>
+<p class="muted small">{who} · generated {esc(f['generated'])}. Predicted Severity, Occurrence and Detection (1 best … 10 worst),
+RPN = S×O×D. After each injection, Severity is re-rated from measured customer impact and Detection from the measured
+health-check blind spot (method: docs/SCORING.md). Occurrence can't be measured by one experiment.</p>
+<div class="card"><h3>What the AI chose to break first, and why</h3><ol class="small">{sel}</ol></div>
+<div class="card wrap"><table><tr><th>Component</th><th>Failure mode</th><th>Predicted effect / rationale</th><th>S</th><th>O</th><th>D</th>
+<th>RPN</th><th>Meas. S</th><th>Meas. D</th><th>Meas. RPN</th><th>Prediction</th></tr>{''.join(rows)}</table></div>"""
+    return page("AI FMEA", body)

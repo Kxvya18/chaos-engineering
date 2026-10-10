@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from . import metrics
+from . import health, metrics
 from .config import Config
 from .util import read_json, read_jsonl, write_json
 
@@ -167,6 +167,9 @@ def analyze_run(cfg: Config, run_dir: Path) -> dict[str, Any]:
     elif injected:
         ttr = 0.0
 
+    platform = [{"ts": e["ts"], "green": e["green"]} for e in events if e["action"] == "platform_health"]
+    blind = health.blind_spot(cfg, samples, platform, b["inject"], end, baseline) if platform else None
+
     sev = severity(cfg, journeys, recovered, recovery_s, unexpected, injected, data_loss)
     result = {
         "run_id": exp["run_id"],
@@ -183,6 +186,7 @@ def analyze_run(cfg: Config, run_dir: Path) -> dict[str, Any]:
         "impacted_journeys": impacted,
         "unexpected_impacted_journeys": unexpected,
         "time_to_restore_s": ttr,
+        "health_blind_spot": blind,
         "self_healed": self_healed,
         "target_timeline": timeline,
         "checks": checks,

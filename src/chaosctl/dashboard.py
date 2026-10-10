@@ -12,7 +12,7 @@ import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
-from . import faults, htmlreport, metrics, pages, safety
+from . import faults, health, htmlreport, metrics, pages, safety
 from .config import Config
 from .registry import Registry
 from .util import now, read_json, read_jsonl
@@ -98,6 +98,24 @@ def storefront(cfg: Config, ctx: faults.Ctx) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def live_state(cfg: Config, ctx: faults.Ctx) -> str:
+    st = status(cfg)
+    try:
+        snap = health.project_health(cfg, ctx.docker)
+        green = health.verdict(cfg, snap)["green"]
+    except Exception:  # docker unreachable: show the map without platform state
+        snap, green = {}, None
+    journeys = (st["live"] or {}).get("journeys", {})
+    failing = [j for j, v in journeys.items() if v["ok"] < v["n"]]
+    overlay = pages.live_overlay(cfg, [f["target"] for f in st["active_faults"]], snap, failing)
+    return pages.live_fragment(cfg, overlay, journeys, (st["live"] or {}).get("run_id"), green)
+
+
+LIVE_MAP_JS = """<div id="livemap">loading…</div><script>
+async function lm(){try{document.getElementById('livemap').innerHTML=await (await fetch('/api/live-map')).text()}catch(e){}}
+lm();setInterval(lm,2000);</script>"""
+
+
 def make_handler(cfg: Config, ctx_factory: Callable[[], faults.Ctx]):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:
@@ -120,6 +138,14 @@ def make_handler(cfg: Config, ctx_factory: Callable[[], faults.Ctx]):
                     return self._send(200, pages.page("Day-1 checkpoint", pages.checklist_html(rows) + live_panel()))
                 if parts == ["runs"]:
                     return self._send(200, index_html(cfg))
+                if parts == ["live"]:
+                    return self._send(200, pages.page("Live blast radius", "<h1>Live blast radius</h1>"
+                                                      "<p class='muted small'>Refreshes every 2 s from probes, container "
+                                                      "health and active faults.</p>" + LIVE_MAP_JS))
+                if parts == ["api", "live-map"]:
+                    return self._send(200, live_state(cfg, ctx_factory()))
+                if parts == ["fmea"]:
+                    return self._send(200, pages.fmea_html(cfg))
                 if parts == ["map"]:
                     return self._send(200, pages.map_html(cfg))
                 if parts == ["baseline"]:

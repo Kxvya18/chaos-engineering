@@ -129,6 +129,9 @@ def render_run(cfg, run_dir: Path) -> str:
          ("Severity", f"{a['severity']['label']} ({a['severity']['score']})")]
     for c in a.get("checks", []):
         k.append(("Carts lost", f"{c['lost']} of {c['seeded']}"))
+    bs = a.get("health_blind_spot")
+    if bs and bs["customer_impact_s"]:
+        k.append(("Impact invisible to health checks", f"{bs['silent_impact_s']:.0f} of {bs['customer_impact_s']:.0f} s"))
     kpis = "".join(f'<div class="card kpi"><div class="v">{esc(v)}</div><div class="l">{esc(lbl)}</div></div>' for lbl, v in k)
 
     rows = []

@@ -27,6 +27,11 @@ _Last updated: 2026-10-10 — S1 deep-dive (crash → evidence → AI incident �
   - watchdog readiness gate and signal isolation;
   - dashboard Day-1 checklist, map and baseline pages.
 
+- First live Mac run (old code): app up, but `product-catalog` was UNHEALTHY (120 % CPU); 5/7 journeys timed out at 5 s.
+  No valid baseline yet. Kill switch left engaged. Docker Desktop memory 7.75 GiB.
+- Added: health-check blind-spot metric, live blast-radius map, `doctor --collect`, AI FMEA (`plan`/`autopilot`)
+  with measured S/D/RPN per run, `/fmea` page.
+
 ## Current blocker
 - No live evidence yet: everything below the simulation must run on the team Mac (no Docker daemon in the Claude cloud session).
 - Owner: switch GitHub default branch to `main`; provide `ANTHROPIC_API_KEY` (spend-capped) for runtime AI on Day 2.

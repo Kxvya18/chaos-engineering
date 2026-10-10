@@ -24,10 +24,9 @@ step2() { banner "2. Application mapping"; need_docker
   chaosctl map && echo "Map: docs/DEPENDENCIES.md"; }
 step3() { banner "3. Monitoring baseline (steady load, ${BASELINE_S:-300} s)"; need_docker
   chaosctl baseline --duration "${BASELINE_S:-300}"; }
-step4() { banner "4a. Failure 1 (slide example: container crash) - S1 cart datastore crash"; need_docker
-  chaosctl run --scenario cart-store-crash
-  banner "4b. Failure 2 (slide example: network delay) - S2 slow product catalog"
-  chaosctl run --scenario catalog-latency; }
+step4() { banner "4. AI-driven failure injection: AI writes the FMEA, picks what to break, engine injects safely"; need_docker
+  [ -z "${ANTHROPIC_API_KEY:-}" ] && echo "NOTE: no ANTHROPIC_API_KEY set - the FMEA and analysis will be RULE-BASED (labelled as such)."
+  chaosctl autopilot --max "${AI_MAX:-2}"; }
 step5() { banner "5a. Safety: automatic stop on threshold breach (tripwire)"; need_docker
   chaosctl run --tripwire
   banner "5b. Safety: kill switch during a live run"
