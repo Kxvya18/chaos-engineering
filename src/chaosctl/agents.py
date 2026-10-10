@@ -97,7 +97,8 @@ class Bus:
             "mission_id": mission_id, "status": "running", "started": iso(), "finished": None, "pid": os.getpid(),
             "options": options, "agents": {n: {"name": nm, "status": "idle", "task": "", "updated": None}
                                            for n, nm, *_ in AGENTS},
-            "active": None, "current": None, "queue": [], "results": [], "fixes": [], "log": [], "stop_reason": None}
+            "active": None, "current": None, "queue": [], "results": [], "fixes": [], "decisions": [], "log": [],
+            "stop_reason": None}
         self._save()
 
     def _save(self) -> None:
@@ -143,8 +144,21 @@ class Bus:
             waited += 1.0
         else:
             decision = "skip"  # no answer: never change the system without a human decision
-        self.set(approval={**req, "status": decision, "decided": iso()})
+            self.snap["approval_timeout"] = True
+        by = ("no answer within the time limit (no change)" if self.snap.pop("approval_timeout", False) else
+              "kill switch engaged (no change)" if safety.kill_engaged(self.cfg) else "operator on the dashboard")
+        self.set(approval={**req, "status": decision, "decided": iso(), "by": by})
         return decision
+
+    def record_decision(self, req: dict[str, Any], decision: str, by: str) -> dict[str, Any]:
+        rec = {"id": req["id"], "test": req["test"], "run_id": req["run_id"], "fix": req["fix"]["title"],
+               "fix_id": req["fix"]["id"], "decision": decision, "by": by,
+               "asked": (self.snap.get("approval") or {}).get("asked") or iso(), "decided": iso()}
+        self.snap["decisions"] = self.snap.get("decisions", []) + [rec]
+        with (self.dir / "agents.jsonl").open("a") as fh:
+            fh.write(json.dumps({"ts": iso(), "agent": "human", "name": "Human decision", **rec}) + "\n")
+        self._save()
+        return rec
 
 
 def decide(cfg: Config, req_id: str, decision: str) -> bool:
@@ -177,7 +191,8 @@ class Options:
     approval: str = "ask"  # ask = human in the loop per fix; auto = pre-approved; never = recommend only
     approval_timeout_s: int = 900
     tripwire: bool = True  # Safety Officer proves the automatic stop at the end of the mission
-    max_tests: int = 5
+    max_tests: int | None = None  # None = the whole queue
+    suite: str = "priority"  # priority = one per failure type; database = every database error on every datastore
     fault_seconds: int | None = None
     reuse: bool = False  # reuse an accepted map + baseline instead of re-measuring (re-takes of the demo)
 
@@ -242,7 +257,8 @@ class Mission:
     def planner(self, st: MissionState) -> MissionState:
         self._work("planner", "writing the FMEA and choosing tests (AI)" if self.opts.use_ai
                    else "writing the FMEA (rule-based: AI disabled)")
-        out = fmea.run(self.cfg, use_ai=self.opts.use_ai, coverage=True, fault_seconds=self.opts.fault_seconds)
+        out = fmea.run(self.cfg, use_ai=self.opts.use_ai, coverage=self.opts.suite == "priority",
+                       fault_seconds=self.opts.fault_seconds, suite=self.opts.suite)
         plan = out["plan"]
         planner.verify_plan(plan)
         exps = plan["experiments"][: self.opts.max_tests]
@@ -375,21 +391,27 @@ class Mission:
             return {"queue": queue, "fixes": fixes, "results": st["results"]}
         decision = "skip"
         if fix and harmed and not st.get("stop_reason"):
+            req = {"id": f"{cur['run_id']}:{fix['id']}", "run_id": cur["run_id"], "test": res["title"],
+                   "impact": f"customers affected: {', '.join(res['impacted']) or 'none'}; severity "
+                             f"{res['severity']}; carts lost {res.get('carts_lost') or 'n/a'}",
+                   "fix": {k: fix[k] for k in ("id", "title", "pattern", "proof", "service")},
+                   "recommendations": recs}
             if self.opts.apply_fixes or self.opts.approval == "auto":
-                decision = "apply"
-            elif self.opts.approval == "ask":
-                req = {"id": f"{cur['run_id']}:{fix['id']}", "run_id": cur["run_id"], "test": res["title"],
-                       "impact": f"customers affected: {', '.join(res['impacted']) or 'none'}; severity "
-                                 f"{res['severity']}; carts lost {res.get('carts_lost') or 'n/a'}",
-                       "fix": {k: fix[k] for k in ("id", "title", "pattern", "proof", "service")},
-                       "recommendations": recs}
+                decision, by = "apply", "pre-approved by the operator at mission start (--approval auto)"
+            elif self.opts.approval == "never":
+                decision, by = "skip", "operator policy at mission start: recommend only"
+            else:
                 self.bus.set(current={**(self.bus.snap.get("current") or {}), "phase": "waiting for human approval"})
                 self.bus.agent("remediator", "waiting", f"waiting for human approval: {fix['title']}")
                 self.tools.echo(f"    APPROVAL NEEDED: apply '{fix['title']}' to {fix['service']}? "
                                 "(dashboard: Agent mission page)")
-                decision = (self.tools.ask_human(req) if self.tools.ask_human else
-                            self.bus.wait_decision(req, self.opts.approval_timeout_s, self.sleep))
-                self._say(f"    human decision: {decision}")
+                if self.tools.ask_human:
+                    decision, by = self.tools.ask_human(req), "operator (terminal)"
+                else:
+                    decision = self.bus.wait_decision(req, self.opts.approval_timeout_s, self.sleep)
+                    by = self.bus.snap["approval"]["by"]
+                self._say(f"    human decision: {decision} ({by})")
+            res["decision"] = self.bus.record_decision(req, decision, by)
         if not harmed:
             res["remediation"] = "no customer impact: nothing to fix (rollback verified)"
             self._done("remediator", res["remediation"])
@@ -422,6 +444,7 @@ class Mission:
         self._work("reporter", "publishing the mission report")
         rep = {"mission_id": self.mission_id, "finished": iso(), "stop_reason": st.get("stop_reason"),
                "options": vars(self.opts), "results": st.get("results", []), "fixes": st.get("fixes", []),
+               "decisions": self.bus.snap.get("decisions", []),
                "agents": [{"node": n, "name": nm, "components": c, "uses_llm": llm, "role": r}
                           for n, nm, c, llm, r in AGENTS]}
         write_json(self.bus.dir / "report.json", rep)
@@ -504,8 +527,11 @@ def recommendations(cfg: Config, run_id: str, n: int = 3) -> list[dict[str, Any]
     p = cfg.runs_dir / run_id / "incident.json"
     if not p.exists():
         return []
-    fx = sorted(read_json(p)["analysis"].get("fixes") or [], key=lambda f: f["priority"])[:n]
-    return [{k: f.get(k) for k in ("priority", "pattern_name", "change", "expected_effect")} for f in fx]
+    inc = read_json(p)
+    titles = {it["id"]: it["title"] for it in inc.get("evidence", [])}
+    fx = sorted(inc["analysis"].get("fixes") or [], key=lambda f: f["priority"])[:n]
+    return [{**{k: f.get(k) for k in ("priority", "pattern_id", "pattern_name", "change", "expected_effect", "references")},
+             "evidence": [{"id": e, "title": titles.get(e, "?")} for e in f.get("evidence_ids", [])]} for f in fx]
 
 
 def read_fix(cfg: Config, fix_id: str) -> dict[str, Any]:
@@ -541,10 +567,21 @@ def summarize(cfg: Config, run_dir: Path, cur: dict[str, Any]) -> dict[str, Any]
                severity_score=a["severity"]["score"], time_to_restore_s=a.get("time_to_restore_s"),
                silent_s=(a.get("health_blind_spot") or {}).get("silent_impact_s"),
                data_lost=bool(lost and lost["lost"]), carts_lost=f"{lost['lost']}/{lost['seeded']}" if lost else None)
+    out["db_error"] = exp.get("db_error")
+    out["target"] = exp["faults"][0]["target"]
     ip = run_dir / "incident.json"
     if ip.exists():
-        fx = sorted(read_json(ip)["analysis"].get("fixes") or [], key=lambda f: f["priority"])
+        inc = read_json(ip)
+        r, m = inc["analysis"], inc["meta"]
+        fx = sorted(r.get("fixes") or [], key=lambda f: f["priority"])
         out["top_fix"] = fx[0]["pattern_name"] if fx else None
+        out["analysis"] = {"method": m["method"] + (" (last validated answer)" if (m.get("ai_meta") or {}).get("cached")
+                                                    else ""),
+                           "summary": r.get("summary"), "verdict": r.get("verdict"),
+                           "where": (r.get("where") or {}).get("failed_component"),
+                           "path": (r.get("where") or {}).get("propagation_path"), "how": r.get("how"),
+                           "why": (r.get("why") or {}).get("root_cause"),
+                           "detection_gap": r.get("detection_gap"), "unverified_numbers": m.get("unverified_numbers")}
     return out
 
 
@@ -559,6 +596,10 @@ def render_md(rep: dict[str, Any]) -> str:
                      f"{r.get('time_to_restore_s', '')} | {r.get('carts_lost') or '—'} | "
                      f"{'yes' if r.get('rollback_verified') else 'n/a' if r.get('rollback_verified') is None else 'NO'} | "
                      f"{r.get('remediation', r.get('reason', ''))} |")
+    if rep.get("decisions"):
+        lines += ["", "## Human-in-the-loop decisions", "", "| Test | Fix proposed | Decision | By | Decided |",
+                  "|---|---|---|---|---|"]
+        lines += [f"| {d['test']} | {d['fix']} | **{d['decision']}** | {d['by']} | {d['decided']} |" for d in rep["decisions"]]
     if rep["fixes"]:
         lines += ["", "## Fixes", ""]
         lines += [f"- {f['title']} (`{f['fix_id']}`): **{f.get('verdict', 'pending')}** — severity "

@@ -255,7 +255,7 @@ def cmd_mission(cfg: config.Config, args) -> int:
     tools = agents.Tools(cfg=cfg, ctx=ctx, make_map=make_map, run_baseline=run_baseline, orchestrator=orchestrator,
                          approve=approve)
     opts = agents.Options(use_ai=not args.no_ai, apply_fixes=args.apply_fixes, approval=args.approval,
-                          max_tests=args.max, fault_seconds=args.fault_seconds, reuse=args.reuse,
+                          max_tests=args.max, fault_seconds=args.fault_seconds, reuse=args.reuse, suite=args.suite,
                           tripwire=not args.no_tripwire)
     try:
         final = agents.Mission(tools, opts).run()
@@ -450,7 +450,9 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--warmup", type=float, default=15, help="seconds probed but excluded from the numbers")
     mi = sub.add_parser("mission", help="multi-agent mission (LangGraph): every failure type in priority order, "
                                          "verified rollback, vetted fix + re-test")
-    mi.add_argument("--max", type=int, default=5, help="max tests (default 5 = one per failure type)")
+    mi.add_argument("--max", type=int, default=None, help="max tests (default: the whole queue)")
+    mi.add_argument("--suite", choices=["priority", "database"], default="priority",
+                    help="priority = one per failure type; database = every database error on every datastore")
     mi.add_argument("--fault-seconds", type=int, default=None, help="shorter fault windows for a demo, e.g. 30")
     mi.add_argument("--baseline-seconds", type=int, default=120)
     mi.add_argument("--approval", choices=["ask", "auto", "never"], default="ask",

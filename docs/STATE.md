@@ -46,6 +46,10 @@ _Last updated: 2026-10-10 — verified rollback, AI self-correction loop, review
   Deployment: `scripts/deploy.sh up` (shop + monitoring + chaos platform container). Evidence: `pytest -q` 74 passed
   (simulation); dashboard screenshots from a simulated mission only. NOT RUN live yet.
 
+- Database errors: 6 database failure types on each datastore (`mission --suite database`); Results page database
+  error map (% failed requests per database error, per journey, before/after fix) and mission report (findings,
+  actions, recommendations with evidence, human decision log). Evidence: `pytest -q` 70 passed (simulation). NOT RUN live.
+
 ## Current blocker
 - No live evidence yet: everything below the simulation must run on the team Mac (no Docker daemon in the Claude cloud session).
 - Owner: switch GitHub default branch to `main`; provide `ANTHROPIC_API_KEY` (spend-capped) for runtime AI on Day 2.

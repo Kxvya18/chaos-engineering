@@ -21,17 +21,24 @@ def candidates(cfg: Config, dep_map: dict[str, Any]) -> list[dict[str, Any]]:
     for target in cfg.allowlist:
         is_ds = target in cfg.datastores
         expected = depmap.journeys_touching(cfg, target)
-        specs = [("container-stop", {"mode": "crash"}, 60)]  # real crash: exercises the restart policy
-        if is_ds:
-            specs += [("container-pause", {}, 45), ("cpu-throttle", {"cpus": 0.1}, 60),
-                      ("network-delay", {"delay_ms": 300, "jitter_ms": 50}, 60)]
+        # (fault type, params, seconds, variant, database error it reproduces)
+        specs = [("container-stop", {"mode": "crash"}, 60, "", "crash: database unavailable, connection refused")]
+        if is_ds:  # the full database error catalog, every entry within the [limits] of config/sandbox.toml
+            specs += [("container-stop", {"mode": "stop"}, 30, "restart",
+                       "restart: graceful stop and start (maintenance / failover)"),
+                      ("container-pause", {}, 45, "", "hang: database frozen, queries time out (lock / GC pause)"),
+                      ("network-delay", {"delay_ms": 300, "jitter_ms": 50}, 60, "", "slow queries: +300 ms per call"),
+                      ("network-delay", {"delay_ms": 0, "loss_pct": 30}, 60, "drops",
+                       "connection drops: 30 % packet loss, resets and retries"),
+                      ("cpu-throttle", {"cpus": 0.1}, 60, "", "resource exhaustion: database CPU-starved (10 % of a CPU)")]
         else:
-            specs += [("network-delay", {"delay_ms": 500, "jitter_ms": 100}, 60),
-                      ("cpu-throttle", {"cpus": 0.1}, 60)]
-        for ftype, params, dur in specs:
-            out.append({"candidate_id": f"{ftype}:{target}", "fault_type": ftype, "target": target,
-                        "params": params, "duration_s": dur, "expected_journeys": expected,
-                        "kind": "datastore" if is_ds else "app"})
+            specs += [("network-delay", {"delay_ms": 500, "jitter_ms": 100}, 60, "", ""),
+                      ("cpu-throttle", {"cpus": 0.1}, 60, "", "")]
+        for ftype, params, dur, variant, db_error in specs:
+            out.append({"candidate_id": f"{ftype}:{target}" + (f"#{variant}" if variant else ""),
+                        "fault_type": ftype, "target": target, "params": params, "duration_s": dur,
+                        "expected_journeys": expected, "kind": "datastore" if is_ds else "app",
+                        "db_error": db_error or None})
     out.append({"candidate_id": "traffic-spike:load-generator", "fault_type": "traffic-spike",
                 "target": "load-generator", "params": {"users": 40, "spawn_rate": 5}, "duration_s": 120,
                 "expected_journeys": sorted(cfg.journeys), "kind": "load"})
@@ -60,8 +67,10 @@ def evidence(cfg: Config, dep_map: dict[str, Any], c: dict[str, Any], history: l
 
 
 def experiment_from(cfg: Config, c: dict[str, Any], s: dict[str, Any]) -> dict[str, Any]:
+    variant = c["candidate_id"].partition("#")[2]
     return {
-        "id": f"E{s['rank']:02d}-{c['fault_type']}-{c['target']}",
+        "id": f"E{s['rank']:02d}-{c['fault_type']}-{c['target']}" + (f"-{variant}" if variant else ""),
+        "db_error": c.get("db_error"),
         "rank": s["rank"],
         "faults": [{k: c[k] for k in ("fault_type", "target", "params", "duration_s")}],
         "expected_journeys": c["expected_journeys"],

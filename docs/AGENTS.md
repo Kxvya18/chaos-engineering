@@ -35,3 +35,17 @@ Safety: a fault is always rolled back by the Recovery Agent; if the graph fails,
 open run and reconciles the fault registry; the watchdog and kill switch work without any agent.
 Evidence: `tests/test_mission.py` (simulated end to end: all agents, all 5 failure types in priority order, verified
 rollback, tripwire auto-stop, human Approve → fix proven / Decline → rollback only).
+
+## Test sets
+- **priority** (default): the planner's picks + the highest-risk failure of every remaining type, then the tripwire.
+- **database**: every database error on every datastore (`valkey-cart`, `astronomy-db`, `kafka`), highest risk first:
+  crash (connection refused), restart (graceful stop/start), hang (queries time out), slow queries (+300 ms),
+  connection drops (30 % packet loss), resource exhaustion (CPU-starved). Dashboard: *test set: database errors*;
+  CLI: `chaosctl mission --suite database`.
+
+## Results page
+- **Database error map**: per database error, the % of customer requests that failed while it was active (overall and
+  per journey), where the failing traces started (Jaeger), restore time, data lost, and the re-test after an approved fix.
+- **Mission report**: per test, what the analysis found (where / how / why, AI or labelled fallback), what the system did
+  (verified rollback, fix applied + proof), what we recommend you do (fixes with the evidence items they cite), and the
+  **human-in-the-loop decision log** (who decided, what, when). Same content in `artifacts/missions/<id>/report.md`.

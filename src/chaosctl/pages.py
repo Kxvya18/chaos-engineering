@@ -429,3 +429,146 @@ It then picks the tests that teach us the most. After each test, the measured re
 health checks missed it. Likelihood cannot be measured by one test, so it stays predicted (method: docs/SCORING.md).
 Generated {esc(f['generated'])}.</p></div>"""
     return page("AI test plan", body, "/fmea")
+
+
+# ---------------------------------------------------------------- database error map + mission report (Results page)
+def db_error_map(cfg: Config) -> list[dict[str, Any]]:
+    """Latest measured run per (datastore, database error): % of customer requests that failed during the fault,
+    overall and per journey, plus where the failing traces originated (Jaeger)."""
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    retests: dict[str, dict[str, Any]] = {}  # original run id -> its re-test after a fix
+    runs = [a for a in _runs(cfg) if a["timeline"].get("inject") and not a["experiment_id"].startswith("TRIPWIRE")]
+    for a in runs:
+        exp = _experiment(cfg, a["run_id"])
+        if exp.get("verification_of"):
+            retests.setdefault(exp["verification_of"], a)
+    for a in runs:  # newest first
+        exp = _experiment(cfg, a["run_id"])
+        if exp.get("verification_of"):
+            continue
+        f0 = (exp.get("faults") or [{}])[0]
+        if f0.get("target") not in cfg.datastores:
+            continue
+        label = exp.get("db_error") or f0.get("fault_type")
+        key = (f0["target"], label)
+        if key in latest:
+            continue
+        fs = [j["fault"] for j in a["journeys"].values() if j.get("fault") and j["fault"].get("n")]
+        n = sum(f["n"] for f in fs)
+        errs = sum(f["n"] * (f["error_rate"] or 0) for f in fs)
+        base = [j["baseline"]["error_rate"] for j in a["journeys"].values() if j["baseline"].get("error_rate") is not None]
+        ev_p = cfg.runs_dir / a["run_id"] / "evidence.json"
+        votes = ((read_json(ev_p).get("traces") or {}).get("origin_service_votes") or []) if ev_p.exists() else []
+        total_votes = sum(c for _, c in votes) or 0
+        lost = next((c for c in a.get("checks", []) if c.get("lost") is not None), None)
+        latest[key] = {
+            "datastore": f0["target"], "db_error": label, "run_id": a["run_id"],
+            "error_pct": round(100 * errs / n, 1) if n else None,
+            "baseline_error_pct": round(100 * sum(base) / len(base), 1) if base else None,
+            "journeys": {jn: {"error_pct": None if j["fault"]["error_rate"] is None else round(100 * j["fault"]["error_rate"], 1),
+                              "impacted": j["impacted"]} for jn, j in a["journeys"].items()},
+            "origin": [{"service": sv, "pct": round(100 * c / total_votes, 1)} for sv, c in votes] if total_votes else [],
+            "time_to_restore_s": a.get("time_to_restore_s"),
+            "silent_s": (a.get("health_blind_spot") or {}).get("silent_impact_s"),
+            "data_lost": f"{lost['lost']}/{lost['seeded']}" if lost else None, "severity": a["severity"]["label"],
+            "after_fix": _after_fix(retests.get(a["run_id"]))}
+    return sorted(latest.values(), key=lambda r: (r["datastore"], -(r["error_pct"] or 0)))
+
+
+def _after_fix(a: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not a:
+        return None
+    fs = [j["fault"] for j in a["journeys"].values() if j.get("fault") and j["fault"].get("n")]
+    n = sum(f["n"] for f in fs)
+    lost = next((c for c in a.get("checks", []) if c.get("lost") is not None), None)
+    return {"run_id": a["run_id"], "error_pct": round(100 * sum(f["n"] * (f["error_rate"] or 0) for f in fs) / n, 1) if n else None,
+            "data_lost": f"{lost['lost']}/{lost['seeded']}" if lost else None}
+
+
+def db_map_html(cfg: Config) -> str:
+    rows = db_error_map(cfg)
+    if not rows:
+        return ("<div class='card muted'>No database failure tested yet. On the Agent mission page choose "
+                "<b>test set: database errors</b>.</div>")
+    journeys = sorted(cfg.journeys)
+    head = "".join(f"<th class='num'>{esc(j)}</th>" for j in journeys)
+    trs = []
+    for r in rows:
+        cells = "".join(
+            f"<td class='num'>{'<b>' if r['journeys'].get(j, {}).get('impacted') else ''}"
+            f"{esc(r['journeys'].get(j, {}).get('error_pct'))}{'% ▲</b>' if r['journeys'].get(j, {}).get('impacted') else '%'}</td>"
+            if r["journeys"].get(j, {}).get("error_pct") is not None else "<td class='num muted'>—</td>" for j in journeys)
+        origin = ", ".join(f"{esc(o['service'])} {o['pct']}%" for o in r["origin"][:3]) or "—"
+        trs.append(f"<tr><td><b>{esc(r['datastore'])}</b></td><td><a href='/runs/{esc(r['run_id'])}/'>{esc(r['db_error'])}</a></td>"
+                   f"<td class='num'><b>{esc(r['error_pct'])}%</b><br><span class='small muted'>normal "
+                   f"{esc(r['baseline_error_pct'])}%</span></td>{cells}<td class='small'>{origin}</td>"
+                   f"<td class='num'>{esc(r['time_to_restore_s'])}</td><td class='num'>{esc(r['data_lost'] or '—')}</td>"
+                   + (f"<td class='small'><a href='/runs/{esc(r['after_fix']['run_id'])}/'>{esc(r['after_fix']['error_pct'])}% "
+                      f"failed, data lost {esc(r['after_fix']['data_lost'] or '—')}</a></td>" if r["after_fix"] else
+                      "<td class='small muted'>no fix applied</td>") + "</tr>")
+    return (f"<div class='card wrap'><table><tr><th>Database</th><th>Database error injected</th><th class='num'>Customer "
+            f"requests failed</th>{head}<th>Where failing traces started (Jaeger)</th><th class='num'>Restore s</th>"
+            f"<th class='num'>Data lost</th><th>After the approved fix (re-test)</th></tr>{''.join(trs)}</table><p class='small muted'>% = share of test requests that "
+            f"failed while the database error was active (all journeys, then per journey). ▲ bold = journey hurt (errors or slowness outside its normal band, so 0.0% ▲ means slow, not failing). "
+            f"Latest run per database error; click a row for the full evidence.</p></div>")
+
+
+def _latest_mission(cfg: Config) -> dict[str, Any] | None:
+    d = cfg.artifacts_dir / "missions"
+    reps = sorted(d.glob("*/report.json")) if d.exists() else []
+    return read_json(reps[-1]) if reps else None
+
+
+def mission_report_html(cfg: Config) -> str:
+    rep = _latest_mission(cfg)
+    if not rep:
+        return "<div class='card muted'>No mission report yet. Start one on the <a href='/mission'>Agent mission</a> page.</div>"
+    fixes = {f["before_run"]: f for f in rep.get("fixes", [])}
+    after = {f.get("after_run"): f for f in rep.get("fixes", [])}
+    cards = []
+    for r in rep["results"]:
+        if r.get("run_id") in after:  # a re-test is reported inside the card of the test it proves
+            continue
+        an = r.get("analysis") or {}
+        method = ("AI" if an.get("method", "").startswith("ai") else "rule-based fallback (AI not used)") if an else "not analysed"
+        found = (f"<p class='small'><b>Where:</b> {esc(an.get('where'))} · <b>path:</b> "
+                 f"{esc(' → '.join(an.get('path') or []))}<br><b>How:</b> {esc(an.get('how'))}<br><b>Why:</b> "
+                 f"{esc(an.get('why'))}</p>" if an else "")
+        did = [f"Rolled the failure back: {'✓ undo verified against the pre-test snapshot' if r.get('rollback_verified') else 'n/a'}"]
+        fx = fixes.get(r.get("run_id"))
+        if fx:
+            did.append(f"Applied <b>{esc(fx['title'])}</b> after human approval, then re-ran the same test: "
+                       f"<b>{esc(fx.get('verdict'))}</b> (severity {esc(fx.get('severity_before'))} → "
+                       f"{esc(fx.get('severity_after'))}){' and kept it' if fx.get('verdict') == 'fixed' else '; reverted'}"
+                       f" · <a href='/compare/{esc(fx.get('comparison'))}'>before / after</a>")
+        elif r.get("remediation"):
+            did.append(esc(r["remediation"]))
+        recs = "".join(
+            f"<tr><td>{esc(x.get('priority'))}</td><td><b>{esc(x.get('pattern_name'))}</b></td><td class='small'>{esc(x.get('change'))}"
+            f"</td><td class='small'>{esc(x.get('expected_effect'))}</td><td class='small'>"
+            + "<br>".join(f"{esc(e['id'])}: {esc(e['title'])}" for e in x.get("evidence", []))
+            + "</td><td class='small'>" + " ".join(f"<a href='{esc(u)}'>[{i + 1}]</a>" for i, u in enumerate(x.get("references") or []))
+            + "</td></tr>" for x in r.get("recommendations") or [])
+        dec = r.get("decision")
+        dec_html = (f"<p class='small'><b>Human decision:</b> {esc(dec['fix'])} → <b>{esc(dec['decision'])}</b> by "
+                    f"{esc(dec['by'])} at {esc(dec['decided'])}</p>" if dec else "")
+        cards.append(
+            f"<div class='card result sev-{esc(r.get('severity'))}'><div class='small muted'>P{esc(r.get('priority'))} · "
+            f"{esc(r.get('db_error') or r.get('source'))}</div><h3>{esc(r['title'])}</h3>"
+            f"<p class='small'><b>Customer impact:</b> {esc(', '.join(r.get('impacted') or []) or 'none')} · severity "
+            f"{esc(r.get('severity'))} · restore {esc(r.get('time_to_restore_s'))} s"
+            f"{' · carts lost ' + esc(r['carts_lost']) if r.get('carts_lost') else ''}</p>"
+            f"<h4>What the analysis found <span class='small muted'>({method})</span></h4>{found}"
+            f"<h4>What the system did</h4><ul class='small'>{''.join(f'<li>{d}</li>' for d in did)}</ul>"
+            f"<h4>What we recommend you do (with evidence)</h4>"
+            + (f"<div class='wrap'><table><tr><th>Prio</th><th>Fix</th><th>Change</th><th>Expected effect</th><th>Evidence</th>"
+               f"<th>Refs</th></tr>{recs}</table></div>" if recs else "<p class='small muted'>no recommendation (no customer impact)</p>")
+            + f"{dec_html}<p class='small'><a href='/runs/{esc(r.get('run_id'))}/'>Full evidence →</a></p></div>")
+    decs = "".join(f"<tr><td class='small'>{esc(d['decided'])}</td><td>{esc(d['test'])}</td><td>{esc(d['fix'])}</td>"
+                   f"<td><b>{esc(d['decision'])}</b></td><td class='small'>{esc(d['by'])}</td></tr>" for d in rep.get("decisions", []))
+    return (f"<p class='small muted'>Mission <code>{esc(rep['mission_id'])}</code> · finished {esc(rep['finished'])}"
+            f"{' · stopped: ' + esc(rep['stop_reason']) if rep.get('stop_reason') else ''}</p>"
+            f"<h3>Human-in-the-loop decisions</h3>"
+            + (f"<div class='card wrap'><table><tr><th>When</th><th>Test</th><th>Fix proposed</th><th>Decision</th><th>By</th></tr>"
+               f"{decs}</table></div>" if decs else "<div class='card small muted'>No fix needed a decision in this mission.</div>")
+            + "".join(cards))
