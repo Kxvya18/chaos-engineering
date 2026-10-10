@@ -53,6 +53,10 @@ class DockerCLI:
             "status": st.get("Status"),
             "health": (st.get("Health") or {}).get("Status"),
             "restart_count": info.get("RestartCount"),
+            "exit_code": st.get("ExitCode"),
+            "oom_killed": st.get("OOMKilled"),
+            "started_at": st.get("StartedAt"),
+            "pid": st.get("Pid"),
         }
 
     def context_endpoint(self) -> str:

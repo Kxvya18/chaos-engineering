@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Wrapper around the OpenTelemetry Demo compose stack with the exact flags chaosctl expects.
-# Usage: scripts/demo.sh install|up|down|ps|stats|logs <service>
+# Usage: scripts/demo.sh install|up|down|ps|stats|logs <service>|fix <name>|unfix
 set -euo pipefail
 DEMO_DIR="${CHAOS_DEMO_DIR:-$HOME/chaos/opentelemetry-demo}"
 DEMO_TAG="3.1.0"
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 COMPOSE=(docker compose -p opentelemetry-demo --env-file .env --env-file .env.override
          -f compose.yaml -f compose.full.yaml -f compose.observability.yaml)
+# an applied fix (see `fix` below) is layered on top as one more compose file
+[ -f "$DEMO_DIR/compose.chaos-fix.yaml" ] && COMPOSE+=(-f compose.chaos-fix.yaml)
 
 case "${1:-}" in
   install)
@@ -21,5 +24,15 @@ case "${1:-}" in
   ps)    cd "$DEMO_DIR" && "${COMPOSE[@]}" ps --format 'table {{.Name}}\t{{.State}}\t{{.Status}}' ;;
   stats) docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}' ;;
   logs)  cd "$DEMO_DIR" && "${COMPOSE[@]}" logs --tail 100 "${2:?service name}" ;;
-  *) echo "usage: $0 install|up|down|ps|stats|logs <service>"; exit 2 ;;
+  fix)   # apply a recommended fix as a compose override, e.g. `fix cart-store-crash`
+    src="$REPO_DIR/fixes/${2:?fix name}.compose.yaml"; [ -f "$src" ] || { echo "no fix $src"; exit 2; }
+    cp "$src" "$DEMO_DIR/compose.chaos-fix.yaml"
+    cd "$DEMO_DIR" && docker compose -p opentelemetry-demo --env-file .env --env-file .env.override \
+      -f compose.yaml -f compose.full.yaml -f compose.observability.yaml -f compose.chaos-fix.yaml up --detach --wait
+    echo "fix '$2' applied" ;;
+  unfix) rm -f "$DEMO_DIR/compose.chaos-fix.yaml"
+    cd "$DEMO_DIR" && docker compose -p opentelemetry-demo --env-file .env --env-file .env.override \
+      -f compose.yaml -f compose.full.yaml -f compose.observability.yaml up --detach --wait
+    echo "fix removed (original demo configuration restored)" ;;
+  *) echo "usage: $0 install|up|down|ps|stats|logs <service>|fix <name>|unfix"; exit 2 ;;
 esac

@@ -21,7 +21,8 @@ with fixes. Requirements: `docs/REQUIREMENTS.md`. MVP scope: `docs/MVP.md`.
 - `ruff check .` — lint (CI job `python`; config `ruff.toml`).
 - `pip install -e ".[dev]"` then `pytest -q` — unit + simulated end-to-end tests (verified in the Claude cloud session).
 - `chaosctl selftest` — simulated safety suite → `artifacts/safety-checks.md` (verified in cloud session).
-- Live commands (`doctor`, `setup`, `map`, `baseline`, `run`, `kill`, `report`): written, **not yet run on the Mac**.
+- Live commands (`doctor`, `setup`, `map`, `baseline`, `run`, `explain`, `compare`, `kill`, `dashboard`): written, **not yet run on the Mac**.
+  Milestone 1 order and expected results: `docs/MILESTONE1.md`.
   Move each here only after it ran on the sandbox with evidence in `docs/STATE.md`.
 
 ## Milestones

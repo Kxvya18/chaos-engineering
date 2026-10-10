@@ -23,7 +23,7 @@ this document and that file must agree (the code reads only the file).
 ## Fault types and bounds
 | Fault (`fault_type`) | Mechanism | Bounds | Max duration | Rollback (idempotent) |
 |---|---|---|---|---|
-| `container-stop` | `docker stop -t 5` (mode `stop`) or `docker kill` (mode `kill`) | 1 container | 120 s | `docker start` if not running |
+| `container-stop` | `docker stop -t 5` (mode `stop`), `docker kill` (mode `kill`), or mode `crash`: SIGKILL of the target's main PID from a short-lived helper with `--pid=host`. Docker treats this as a crash, so the restart policy is exercised. The PID is re-read from `docker inspect` of the allowlisted target immediately before the kill | 1 container | 120 s | `docker start` if neither running nor restarting |
 | `container-pause` | `docker pause` (hung dependency) | 1 container | 60 s | `docker unpause` if paused |
 | `network-delay` | `tc netem` from a helper container sharing the target's network namespace (`NET_ADMIN` on the helper only) | delay ≤ 2000 ms, jitter ≤ 500 ms, loss ≤ 30 % | 120 s | remove helper + `tc qdisc del dev eth0 root` |
 | `cpu-throttle` | `docker update --cpus` (overloaded service/DB) | cpus ≥ 0.05 | 120 s | restore recorded `NanoCpus` (0 → host CPU count, equivalent to unlimited) |
@@ -44,8 +44,13 @@ this document and that file must agree (the code reads only the file).
 | A6 | Kill switch | `state/KILL` exists |
 On abort the watchdog writes `runs/<id>/ABORT.json` and rolls back every fault of that run itself.
 
+## Deployed mode (container)
+`deploy/compose.chaosctl.yaml` runs chaosctl as a container on the demo network. It mounts the Docker socket, which is
+root-equivalent inside Docker Desktop's VM. That is standard for Docker chaos tools, but it means the code-level
+allowlist and identity checks are the guardrail. The dashboard port is published on `127.0.0.1` only.
+
 ## Kill switch
-- `chaosctl kill` → creates `state/KILL`, rolls back **all** registered faults, then reconciles orphans.
+- `chaosctl kill` (or the dashboard's KILL SWITCH button) → creates `state/KILL`, rolls back **all** registered faults, then reconciles orphans.
 - Ctrl-C in `chaosctl run` → same rollback path. New runs are refused while `state/KILL` exists
   (`chaosctl kill --reset` clears it).
 - `chaosctl reconcile` (also run at the start of every command that injects) rolls back leftover registry

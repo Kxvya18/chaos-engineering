@@ -41,7 +41,7 @@ class Env:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.docker = FakeDocker(cfg)
-        self.http = FakeHttp()
+        self.http = FakeHttp(self.docker)
         self.ctx = faults.Ctx(cfg, self.docker, self.http)
         self.journeys = fake_journeys(cfg, self.docker, self.http)
         self.baseline = {"overall": {"error_rate": 0.0, "p95_ms": 8.0},

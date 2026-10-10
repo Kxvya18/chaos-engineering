@@ -1,0 +1,11 @@
+# Fix for S1-cart-store-crash — pattern DATA_PERSISTENCE (see src/chaosctl/patterns.py).
+# Valkey append-only file (AOF), fsync every second, on a named volume: a process crash or a
+# container re-creation no longer wipes customers' carts (at most ~1 s of writes at risk).
+# Applied with `scripts/demo.sh fix cart-store-crash`, removed with `scripts/demo.sh unfix`.
+services:
+  valkey-cart:
+    command: ["valkey-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - valkey-cart-data:/data
+volumes:
+  valkey-cart-data:

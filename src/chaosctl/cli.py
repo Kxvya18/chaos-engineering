@@ -9,7 +9,22 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import ai, analysis, baseline, config, depmap, faults, planner, report, safety, selftest
+from . import (
+    ai,
+    analysis,
+    baseline,
+    compare,
+    config,
+    dashboard,
+    depmap,
+    faults,
+    incident,
+    planner,
+    report,
+    safety,
+    scenarios,
+    selftest,
+)
 from .dockerctl import DockerCLI, DockerError
 from .http import Http, HttpError
 from .orchestrator import Orchestrator
@@ -159,6 +174,8 @@ def cmd_run(cfg: config.Config, args) -> int:
     plan_ref = None
     if args.tripwire:
         exp = planner.tripwire(cfg)
+    elif args.scenario:
+        exp, plan_ref = scenarios.load(cfg, args.scenario)
     else:
         plan_path = Path(args.plan)
         plan = read_json(plan_path)
@@ -170,7 +187,7 @@ def cmd_run(cfg: config.Config, args) -> int:
         exp = sel[0]
         plan_ref = {"path": str(plan_path), "sha256": plan["meta"]["sha256"], "file_sha256": sha256_file(plan_path)}
     ctx = _ctx(cfg)
-    orch = Orchestrator(cfg, ctx, Journeys(cfg, ctx.http).all(), base)
+    orch = Orchestrator(cfg, ctx, Journeys(cfg, ctx.http).all(), base, progress=print, use_ai=not args.no_ai)
     print(f"running {exp['id']} (Ctrl-C or `chaosctl kill` aborts and rolls back) ...")
     try:
         run_dir = orch.run(exp, plan_ref)
@@ -185,7 +202,51 @@ def cmd_run(cfg: config.Config, args) -> int:
     print(f"outcome={a['outcome']} abort={(a['abort'] or {}).get('reason')} tti={a['time_to_impact_s']}s "
           f"recovered={a['recovered']} recovery={a['recovery_time_s']}s severity={a['severity']['label']} "
           f"({a['severity']['score']})")
-    print(f"impacted={a['impacted_journeys']} unexpected={a['unexpected_impacted_journeys']}")
+    print(f"impacted={a['impacted_journeys']} unexpected={a['unexpected_impacted_journeys']} "
+          f"time_to_restore={a.get('time_to_restore_s')}s self_healed={a.get('self_healed')}")
+    for c in a.get("checks", []):
+        print(f"check {c['check']}: {c['intact']}/{c['seeded']} intact, {c['lost']} LOST")
+    if (run_dir / "incident.json").exists():
+        inc = read_json(run_dir / "incident.json")
+        r = inc["analysis"]
+        print(f"\nINCIDENT ANALYSIS ({inc['meta']['method']}): {r['verdict']}\n  {r['summary']}")
+        print(f"  root cause: {r['why']['root_cause']}")
+        for fx in sorted(r["fixes"], key=lambda f: f["priority"]):
+            print(f"  {fx['priority']} {fx['pattern_name']}: {fx['change']}")
+    print(f"\nreport: chaosctl dashboard  ->  http://127.0.0.1:8090/runs/{run_dir.name}/")
+    return 0
+
+
+def cmd_explain(cfg: config.Config, args) -> int:
+    from .evidence import collect
+
+    run_dir = Path(args.run_dir)
+    if args.recollect:
+        collect(cfg, _ctx(cfg), run_dir)
+    inc = incident.explain(cfg, run_dir, use_ai=not args.no_ai)
+    print(f"{run_dir}/incident.md ({inc['meta']['method']}): {inc['analysis']['verdict']}")
+    for k in ("ai_unavailable", "ai_rejected", "unverified_numbers"):
+        if inc["meta"].get(k):
+            print(f"  note: {k}: {inc['meta'][k]}")
+    return 0
+
+
+def cmd_compare(cfg: config.Config, args) -> int:
+    c, path = compare.run(Path(args.before), Path(args.after), cfg.artifacts_dir)
+    print(path.read_text())
+    return 0
+
+
+def cmd_scenarios(cfg: config.Config, args) -> int:
+    for s in scenarios.list_all(cfg):
+        f = s["faults"][0]
+        print(f"{s['name']:20} {s['id']}: {f['fault_type']} {f['target']} {f.get('params')} {f['duration_s']}s")
+        print(f"{'':20} hypothesis: {s['hypothesis']}")
+    return 0
+
+
+def cmd_dashboard(cfg: config.Config, args) -> int:
+    dashboard.serve(cfg, lambda: _ctx(cfg), args.host, args.port)
     return 0
 
 
@@ -256,7 +317,20 @@ def build_parser() -> argparse.ArgumentParser:
     g = r.add_mutually_exclusive_group(required=True)
     g.add_argument("--experiment", help="experiment id or rank from the plan")
     g.add_argument("--tripwire", action="store_true", help="safety test: must be aborted by the watchdog")
+    g.add_argument("--scenario", help="pre-registered scenario name from scenarios/ (e.g. cart-store-crash)")
     r.add_argument("--plan", default="artifacts/experiment-plan.json")
+    r.add_argument("--no-ai", action="store_true", help="rule-based incident analysis only")
+    ex = sub.add_parser("explain", help="AI incident analysis of one run (where/how/why + fixes)")
+    ex.add_argument("run_dir")
+    ex.add_argument("--no-ai", action="store_true")
+    ex.add_argument("--recollect", action="store_true", help="re-collect traces/logs before explaining")
+    cp = sub.add_parser("compare", help="before/after comparison of two runs of the same scenario")
+    cp.add_argument("before")
+    cp.add_argument("after")
+    sub.add_parser("scenarios", help="list pre-registered scenarios")
+    db = sub.add_parser("dashboard", help="web dashboard: live status, reports, kill switch")
+    db.add_argument("--host", default="127.0.0.1")
+    db.add_argument("--port", type=int, default=8090)
     k = sub.add_parser("kill", help="KILL SWITCH: roll back everything and block new runs")
     k.add_argument("--reset", action="store_true", help="clear the kill switch")
     sub.add_parser("reconcile", help="roll back leftover/orphan faults")
@@ -273,7 +347,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 COMMANDS = {"doctor": cmd_doctor, "setup": cmd_setup, "map": cmd_map, "baseline": cmd_baseline, "plan": cmd_plan,
             "run": cmd_run, "kill": cmd_kill, "reconcile": cmd_reconcile, "status": cmd_status,
-            "analyze": cmd_analyze, "report": cmd_report, "selftest": cmd_selftest, "watchdog": cmd_watchdog}
+            "analyze": cmd_analyze, "report": cmd_report, "selftest": cmd_selftest, "watchdog": cmd_watchdog,
+            "explain": cmd_explain, "compare": cmd_compare, "scenarios": cmd_scenarios, "dashboard": cmd_dashboard}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -285,6 +360,6 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         return COMMANDS[args.cmd](cfg, args)
-    except (DockerError, safety.SafetyError, FileNotFoundError, RuntimeError) as exc:
+    except (DockerError, safety.SafetyError, FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"error: {exc}")
         return 2

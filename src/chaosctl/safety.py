@@ -61,8 +61,8 @@ def validate_fault(cfg: Config, fault: dict[str, Any]) -> None:
         raise SafetyError(f"target {target!r} is protected")
     if target not in cfg.allowlist:
         raise SafetyError(f"target {target!r} is not in the allowlist")
-    if ftype == "container-stop" and params.get("mode", "stop") not in ("stop", "kill"):
-        raise SafetyError("container-stop mode must be 'stop' or 'kill'")
+    if ftype == "container-stop" and params.get("mode", "stop") not in ("stop", "kill", "crash"):
+        raise SafetyError("container-stop mode must be 'stop', 'kill' or 'crash'")
     if ftype == "network-delay":
         delay = params.get("delay_ms", 0)
         jitter = params.get("jitter_ms", 0)
