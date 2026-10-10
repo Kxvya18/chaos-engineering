@@ -1,5 +1,9 @@
 # What we built, in plain words
 
+> **Day 1 vs Day 2.** Day 1 (now) is: app running, map, baseline, inject a crash and a network delay safely,
+> watch the impact, and prove the automatic stop and kill switch. The AI parts below (incident analyst, fixes) belong to
+> Day 2. They are built and tested in simulation, but they are **off** in the Day-1 run.
+
 ## The idea in one paragraph
 We run a real online shop (the OpenTelemetry Demo: about 20 small services, a database, a cache and a queue) on our own laptop.
 Our tool, **chaosctl**, breaks one part of it on purpose, safely and for a limited time, and watches what customers

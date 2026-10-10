@@ -54,7 +54,7 @@ class Env:
             t.start()
             return t
         return Orchestrator(self.cfg, self.ctx, self.journeys, self.baseline, watchdog_starter=start_wd,
-                            cfg_path=Path("/nonexistent"))
+                            cfg_path=Path("/nonexistent"), explain=True)
 
 
 def _expect_error(fn: Callable[[], Any], exc=safety.SafetyError) -> str:

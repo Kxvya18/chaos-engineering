@@ -1,4 +1,15 @@
-# Demo script (≤ 3 minutes)
+# Demo scripts
+
+## Day-1 checkpoint demo (≈ 90 s, no AI)
+| Time | Show | Say |
+|---|---|---|
+| 0:00–0:15 | Shop + `scripts/demo.sh ps` | "Open-source cloud-native shop, around 20 containers, running only in our sandbox." |
+| 0:15–0:30 | `docs/DEPENDENCIES.md` | "Services, dependencies and data flows, each checked against live traces." |
+| 0:30–0:45 | Baseline table + `STEADY STATE ACCEPTED` | "Normal error rate, latency and container health under steady load." |
+| 0:45–1:15 | `scripts/m1.sh 4` live lines + dashboard tiles | "We crash the cart store: cart and checkout go red, everything else stays green. Docker restarts it and we measure time to restore." |
+| 1:15–1:30 | Tripwire run: `abort=A1…` | "If damage spreads beyond the allowed blast radius, the watchdog stops and undoes the experiment by itself. One command or button kills everything." |
+
+# Final demo (≤ 3 minutes, Day 2)
 
 Record it with the dashboard open in the browser, plus a terminal for `chaosctl run`. Do it after the full runbook works,
 so the "before" run already exists. Times are targets.

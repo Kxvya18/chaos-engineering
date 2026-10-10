@@ -81,6 +81,22 @@ def static_edges(compose: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], li
     return nodes, list(edges.values())
 
 
+def flow_type(e: dict[str, Any], nodes: dict[str, Any]) -> str:
+    """Classify the data flow of an edge from its evidence (env var names) and target kind."""
+    keys = " ".join(ev.get("ref", "") for ev in e.get("evidence", [])).upper()
+    if e["to"] in INFRA:
+        return "telemetry"
+    if "KAFKA" in keys or e["to"] == "kafka":
+        return "async event (Kafka)"
+    if "DB_CONNECTION" in keys or "POSTGRES" in keys or e["to"] == "astronomy-db":
+        return "database (SQL)"
+    if "VALKEY" in keys or "REDIS" in keys or e["to"] == "valkey-cart":
+        return "key-value store"
+    if e.get("evidence") and all(ev["type"] == "compose-depends_on" for ev in e["evidence"]):
+        return "startup ordering only"
+    return "sync request (gRPC/HTTP)"
+
+
 def runtime_edges(cfg: Config, http: Http, lookback_s: int = 3600) -> list[dict[str, Any]]:
     end_ms = int(time.time() * 1000)
     data = http.get_json(f"{cfg.sandbox['jaeger_api'].rstrip('/')}/dependencies",
@@ -103,6 +119,7 @@ def build_map(cfg: Config, compose: dict[str, Any] | None, runtime: list[dict[st
         for n in k:
             nodes.setdefault(n, {"name": n, "image": None, "kind": "unknown(runtime-only)", "healthcheck": None})
     for e in by_key.values():
+        e["flow"] = flow_type(e, nodes)
         e["status"] = ("verified-static+runtime" if e["static"] and e["runtime"] else
                        "verified-static" if e["static"] else "verified-runtime")
         e["telemetry"] = e["to"] in INFRA
@@ -164,12 +181,12 @@ def render_markdown(m: dict[str, Any]) -> str:
             continue
         style = "==>" if e["status"] == "verified-static+runtime" else "-->" if e["static"] else "-.->"
         out.append(f"  {e['from'].replace('-', '_')}[{e['from']}] {style} {e['to'].replace('-', '_')}[{e['to']}]")
-    out += ["```", "", "| From | To | Status | Evidence |", "|---|---|---|---|"]
+    out += ["```", "", "| From | To | Data flow | Status | Evidence |", "|---|---|---|---|---|"]
     for e in m["edges"]:
         if e["telemetry"]:
             continue
         ev = "; ".join(x.get("ref") or f"jaeger calls={x.get('call_count')}" for x in e["evidence"])
-        out.append(f"| {e['from']} | {e['to']} | {e['status']} | {ev} |")
+        out.append(f"| {e['from']} | {e['to']} | {e.get('flow', '')} | {e['status']} | {ev} |")
     d = m["drift"]
     out += ["", "## Drift and gaps", "",
             f"- Static-only edges (not seen in traces): {', '.join(d['static_only']) or 'none'}",
