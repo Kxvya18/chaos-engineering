@@ -18,7 +18,7 @@ class FakeMessages:
 
 
 def _patch(monkeypatch, msgs):
-    import anthropic
+    anthropic = pytest.importorskip("anthropic", reason="run tests with the venv's python: python -m pytest")
 
     client = types.SimpleNamespace(beta=types.SimpleNamespace(messages=msgs), messages=msgs)
     monkeypatch.setattr(anthropic, "Anthropic", lambda: client)
