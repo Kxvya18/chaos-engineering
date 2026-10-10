@@ -56,3 +56,23 @@ def test_milestone1_checklist_all_green(env, monkeypatch):
     assert "<svg" in pages.map_html(cfg) and "key-value store" in pages.map_html(cfg)
     assert "STEADY STATE ACCEPTED" in pages.baseline_html(cfg)
     assert "Experiment runs" in dashboard.index_html(cfg)
+
+
+def test_static_export_has_relative_links_and_no_live_parts(env, monkeypatch, tmp_path):
+    import re
+
+    from chaosctl import export
+    monkeypatch.setenv("CHAOS_AI_DISABLED", "1")
+    env.cfg.root = ROOT
+    exp, ref = scenarios.load(env.cfg, "catalog-latency")
+    exp = copy.deepcopy(exp)
+    exp["faults"][0]["duration_s"] = 4
+    run_dir = env.orchestrator().run(exp, ref)
+    files = export.export(env.cfg, tmp_path / "site")
+    names = {f.name for f in files}
+    assert {"index.html", "map.html", "baseline.html", "fmea.html", "runs.html", f"run-{run_dir.name}.html"} <= names
+    for f in files:
+        html = f.read_text()
+        assert not re.search(r"""href=["']/""", html), (f.name, re.findall(r"""href=["']/[^"']*""", html)[:3])
+        assert "/api/" not in html and "Snapshot ·" in html
+    assert (tmp_path / "site" / "evidence" / run_dir.name / "metrics.jsonl").exists()

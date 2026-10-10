@@ -62,7 +62,7 @@ def index_html(cfg: Config) -> str:
     body = f"""<h1>Experiment runs</h1>{live_panel()}
 <h2>Runs</h2><div class="card wrap"><table><tr><th>Run</th><th>Experiment</th><th>Outcome</th><th>Severity</th><th>Restore (s)</th><th>Carts lost</th></tr>{rows}</table></div>
 <h2>Before / after comparisons (optional)</h2><ul>{comps or '<li class="muted">none yet</li>'}</ul>"""
-    return pages.page("Runs", body)
+    return pages.page("Runs", body, "/runs")
 
 
 LIVE_JS = """<script>
@@ -135,13 +135,13 @@ def make_handler(cfg: Config, ctx_factory: Callable[[], faults.Ctx]):
             try:
                 if not parts:
                     rows = pages.milestone1(cfg, lambda: project_health(cfg, ctx_factory()), lambda: storefront(cfg, ctx_factory()))
-                    return self._send(200, pages.page("Day-1 checkpoint", pages.checklist_html(rows) + live_panel()))
+                    return self._send(200, pages.page("Overview", pages.home_html(cfg, rows), "/"))
                 if parts == ["runs"]:
                     return self._send(200, index_html(cfg))
                 if parts == ["live"]:
                     return self._send(200, pages.page("Live blast radius", "<h1>Live blast radius</h1>"
                                                       "<p class='muted small'>Refreshes every 2 s from probes, container "
-                                                      "health and active faults.</p>" + LIVE_MAP_JS))
+                                                      "health and active faults.</p>" + LIVE_MAP_JS + live_panel(), "/live"))
                 if parts == ["api", "live-map"]:
                     return self._send(200, live_state(cfg, ctx_factory()))
                 if parts == ["fmea"]:

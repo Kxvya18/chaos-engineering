@@ -70,12 +70,27 @@ def test_ai_incident_validation_rejects_unknown_ids_and_flags_numbers(env, monke
     assert incident.validate(bad, items)
     assert "4242" in incident.unverified_numbers("restored in 4242 s", items)
 
-    def fake(system, payload, schema, effort="medium", max_tokens=16000):
+    def fake(system, payload, schema, effort="medium", max_tokens=16000, **kw):
         assert {it["id"] for it in payload["evidence"]} >= {"E1", "E2"}
         return good, {"model_served": "test-model"}
     monkeypatch.setattr(incident.ai, "structured_call", fake)
     inc = incident.explain(env.cfg, run_dir)
     assert inc["meta"]["method"] == "ai" and inc["analysis"]["fixes"][0]["references"]
-    monkeypatch.setattr(incident.ai, "structured_call", lambda *a, **k: (bad, {"model_served": "m"}))
+    calls = []
+
+    def bad_then_good(*a, **k):  # repair loop: the AI gets its validation errors back and corrects itself
+        calls.append(k.get("messages"))
+        return (bad if len(calls) == 1 else good), {"model_served": "m"}
+    monkeypatch.setattr(incident.ai, "structured_call", bad_then_good)
     inc = incident.explain(env.cfg, run_dir)
-    assert inc["meta"]["method"] == "rule-based" and inc["meta"]["ai_rejected"]
+    assert inc["meta"]["method"] == "ai" and inc["meta"]["ai_meta"]["attempts"] == 2
+    assert "failed validation" in calls[1][-1]["content"]
+
+    monkeypatch.setattr(incident.ai, "structured_call", lambda *a, **k: (bad, {"model_served": "m"}))
+    inc = incident.explain(env.cfg, run_dir)  # never valid -> last validated answer for this run is reused
+    assert inc["meta"]["method"] == "ai" and inc["meta"]["ai_meta"]["cached"] is True
+
+    import shutil
+    shutil.rmtree(env.cfg.artifacts_dir / "ai-cache")
+    inc = incident.explain(env.cfg, run_dir)  # no cache either -> deterministic fallback, clearly labelled
+    assert inc["meta"]["method"] == "rule-based" and "still invalid" in inc["meta"]["ai_unavailable"]

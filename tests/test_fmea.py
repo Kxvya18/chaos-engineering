@@ -37,7 +37,7 @@ def test_ai_fmea_validated_and_used(cfg, monkeypatch):
     cfg.root = ROOT
     _inputs(cfg)
 
-    def fake(system, payload, schema, effort="medium", max_tokens=16000):
+    def fake(system, payload, schema, effort="medium", max_tokens=16000, **kw):
         ids = [c["candidate_id"] for c in payload["catalog"]]
         assert "container-stop:valkey-cart" in ids and "rating_scales" in payload
         rows = [{"candidate_id": "container-stop:valkey-cart", "effect": "cart/checkout fail; carts may be lost",
@@ -59,7 +59,11 @@ def test_ai_fmea_validated_and_used(cfg, monkeypatch):
                             "selected": [], "summary": ""}, {})
     monkeypatch.setattr(fmea.ai, "structured_call", bad)
     out = fmea.build(cfg, cfg.artifacts_dir / "dependency-map.json", cfg.artifacts_dir / "baseline.json")
-    assert out["fmea"]["meta"]["method"] == "rule-based" and "ai_rejected" in out["fmea"]["meta"]
+    assert out["fmea"]["meta"]["method"] == "ai-cached"  # invalid answer -> last validated AI FMEA reused
+    import shutil
+    shutil.rmtree(cfg.artifacts_dir / "ai-cache")
+    out = fmea.build(cfg, cfg.artifacts_dir / "dependency-map.json", cfg.artifacts_dir / "baseline.json")
+    assert out["fmea"]["meta"]["method"] == "rule-based" and "still invalid" in out["fmea"]["meta"]["ai_unavailable"]
 
 
 def test_draft_when_baseline_rejected(cfg, monkeypatch):

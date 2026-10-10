@@ -34,8 +34,44 @@ def available() -> tuple[bool, str]:
     return True, "ok"
 
 
+def validated_call(name: str, system: str, payload: dict[str, Any], schema: dict[str, Any],
+                   validator, cache_dir, effort: str = "medium", repairs: int = 2) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Quality ladder: (1) AI answer that passes code validation; (2) if validation fails, send the AI its own
+    errors and ask for a corrected answer (up to `repairs` times); (3) if the API is unreachable, reuse the last
+    validated AI answer for the same task (labelled 'cached'). Raises AIUnavailable only if all of these fail."""
+    import hashlib
+    from pathlib import Path
+
+    cache = Path(cache_dir) / f"{name}.json"
+    msgs = [{"role": "user", "content": json.dumps(payload, separators=(",", ":"))}]
+    problems_seen = []
+    try:
+        for attempt in range(repairs + 1):
+            data, meta = structured_call(system, payload, schema, effort=effort, messages=msgs)
+            err = validator(data)
+            if not err:
+                meta.update(attempts=attempt + 1, repaired=problems_seen)
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                cache.write_text(json.dumps({"saved_at": __import__("time").time(), "meta": meta, "data": data,
+                                             "payload_sha256": hashlib.sha256(msgs[0]["content"].encode()).hexdigest()}))
+                return data, meta
+            problems_seen.append(err)
+            msgs = msgs + [{"role": "assistant", "content": json.dumps(data)},
+                           {"role": "user", "content": f"Your answer failed validation: {err}. Return the complete "
+                                                       f"corrected JSON, following the same rules."}]
+        raise AIUnavailable(f"AI answer still invalid after {repairs} repair(s): {problems_seen}")
+    except AIUnavailable as exc:
+        if cache.exists():
+            saved = json.loads(cache.read_text())
+            if not validator(saved["data"]):
+                meta = {**saved["meta"], "cached": True, "cache_reason": str(exc), "cached_at": saved["saved_at"]}
+                return saved["data"], meta
+        raise
+
+
 def structured_call(system: str, payload: dict[str, Any], schema: dict[str, Any],
-                    effort: str = "medium", max_tokens: int = 16000) -> tuple[dict[str, Any], dict[str, Any]]:
+                    effort: str = "medium", max_tokens: int = 16000,
+                    messages: list[dict[str, Any]] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return (parsed_json, meta). Raises AIUnavailable on any failure (caller falls back)."""
     ok, why = available()
     if not ok:
@@ -48,7 +84,7 @@ def structured_call(system: str, payload: dict[str, Any], schema: dict[str, Any]
         "model": model,
         "max_tokens": max_tokens,
         "system": system,
-        "messages": [{"role": "user", "content": json.dumps(payload, separators=(",", ":"))}],
+        "messages": messages or [{"role": "user", "content": json.dumps(payload, separators=(",", ":"))}],
         "output_config": {"effort": effort, "format": {"type": "json_schema", "schema": schema}},
     }
     try:

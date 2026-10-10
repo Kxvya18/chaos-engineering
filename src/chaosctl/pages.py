@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+from . import ui
 from .config import Config
 from .htmlreport import CSS, esc, pct, small_multiple
 from .util import read_json, read_jsonl
@@ -33,11 +34,8 @@ nav a{margin-right:14px}
 """
 
 
-def page(title: str, body: str) -> str:
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{esc(title)}</title><style>{CSS}{EXTRA_CSS}</style></head><body><main>
-<nav class="small"><a href="/">Day-1 checklist</a><a href="/live">Live blast radius</a><a href="/map">Dependency map</a><a href="/baseline">Baseline</a><a href="/fmea">AI FMEA</a><a href="/runs">Runs</a></nav>
-{body}</main></body></html>"""
+def page(title: str, body: str, active: str | None = None) -> str:
+    return ui.page(title, body, CSS + EXTRA_CSS, active)
 
 
 # ---------------------------------------------------------------- checklist
@@ -94,7 +92,7 @@ def milestone1(cfg: Config, health: Callable[[], dict[str, Any]], storefront: Ca
     if fp.exists():
         fm = read_json(fp)["meta"]
         chooser = ("chosen by AI FMEA (" + str((fm.get("ai_meta") or {}).get("model_served")) + "); "
-                   if fm["method"] == "ai" else "chosen by rule-based FMEA (AI not available); ")
+                   if fm["method"] in ("ai", "ai-cached") else "chosen by rule-based FMEA (AI not available); ")
     rows.append(("4", "First failure injection", "At least one failure triggered and observed", bool(failures),
                  chooser + "; ".join(f"{a['experiment_id']}: impacted {', '.join(a['impacted_journeys']) or 'none'}, restore "
                            f"{a.get('time_to_restore_s')} s" for a in failures[:3]) or "not yet",
@@ -117,12 +115,34 @@ TICK, WARN, CROSS = ('<span class="status ok">✓</span>', '<span class="status 
                      '<span class="status bad">✕</span>')
 
 
+def home_html(cfg: Config, rows: list[dict]) -> str:
+    bp, fp = cfg.artifacts_dir / "baseline.json", cfg.artifacts_dir / "fmea.json"
+    steady = read_json(bp).get("quality", {}).get("pass") if bp.exists() else None
+    fm = read_json(fp)["meta"] if fp.exists() else None
+    tiles = [("System", OK_DONE.replace("done", "running") if rows[0]["ok"] else OPEN.replace("open", "needs attention")),
+             ("Steady state", (OK_DONE.replace("done", "accepted") if steady else OPEN.replace("open", "rejected"))
+              if steady is not None else "<span class='muted'>not measured</span>"),
+             ("Failures chosen by", ("AI · " + esc((fm.get("ai_meta") or {}).get("model_served")) if fm and fm["method"].startswith("ai")
+                                     else "rule-based fallback" if fm else "<span class='muted'>not planned</span>")),
+             ("Milestone 1", f"{sum(r['ok'] for r in rows)} of {len(rows)} done")]
+    tiles_html = "".join(f'<div class="card kpi"><div class="v" style="font-size:18px">{v}</div><div class="l">{esc(k)}</div></div>'
+                         for k, v in tiles)
+    flow = [("1 Map", "who calls whom, verified by traces"), ("2 Baseline", "prove the system is healthy"),
+            ("3 AI FMEA", "AI rates failure modes, picks what to break"), ("4 Safe injection", "bounded, watched, verified rollback"),
+            ("5 Measure & explain", "impact, blind spot, where/how/why, fixes")]
+    flow_html = "".join(f'<div class="card"><b>{esc(a)}</b><span class="k">{esc(b)}</span></div>' for a, b in flow)
+    return f"""<div class="hero"><h1>AI-driven chaos engineering for cloud-native resilience</h1>
+<p>An AI rates how each part of a live microservice shop can fail (FMEA), chooses what to break, and a safety-first engine
+injects it, measures what customers really experienced, and rolls back with proof.</p></div>
+<div class="kpis">{tiles_html}</div><h2>How it works</h2><div class="flow">{flow_html}</div>{checklist_html(rows)}"""
+
+
 def checklist_html(rows: list[dict]) -> str:
     trs = "".join(
         f"<tr><td>{esc(r['n'])}</td><td><b>{esc(r['milestone'])}</b><br><span class='small muted'>{esc(r['expected'])}</span></td>"
         f"<td>{OK_DONE if r['ok'] else OPEN}</td>"
         f"<td class='small'>{esc(r['evidence'])}</td><td><a href='{esc(r['link'])}'>view</a></td></tr>" for r in rows)
-    return f"""<h1>Milestone 1 — Day-1 checkpoint</h1><p class="muted">Every row is computed from evidence files and live
+    return f"""<h2>Milestone 1 — Day-1 checkpoint</h2><p class="muted small">Every row is computed from evidence files and live
 container state; nothing is entered by hand.</p><div class="card wrap"><table><tr><th>#</th><th>Milestone</th><th>Status</th>
 <th>Evidence</th><th></th></tr>{trs}</table></div>"""
 
@@ -200,7 +220,7 @@ def map_svg(m: dict[str, Any], overlay: dict[str, str] | None = None) -> str:
 def map_html(cfg: Config) -> str:
     mp = cfg.artifacts_dir / "dependency-map.json"
     if not mp.exists():
-        return page("Dependency map", "<h1>Dependency map</h1><p>Not yet: run <code>chaosctl map</code>.</p>")
+        return page("Dependency map", "<h1>Dependency map</h1><p>Not yet: run <code>chaosctl map</code>.</p>", "/map")
     m = read_json(mp)
     edges = [e for e in m["edges"] if not e.get("telemetry")]
     legend = "".join(f'<span><span class="sw" style="border-color:{c}"></span>{esc(g)}</span>'
@@ -219,14 +239,14 @@ Hover an arrow for details.</p><div class="legend">{legend}</div><div class="car
 <h2>Gaps found while mapping</h2><div class="card"><ul class="small">{gaps}</ul></div>
 <h2>All dependencies (table view)</h2><div class="card wrap"><table><tr><th>From</th><th>To</th><th>Data flow</th><th>Status</th>
 <th>Evidence</th></tr>{rows}</table></div>"""
-    return page("Dependency map", body)
+    return page("Dependency map", body, "/map")
 
 
 # ---------------------------------------------------------------- baseline
 def baseline_html(cfg: Config) -> str:
     bp = cfg.artifacts_dir / "baseline.json"
     if not bp.exists():
-        return page("Baseline", "<h1>Baseline</h1><p>Not yet: run <code>chaosctl baseline</code>.</p>")
+        return page("Baseline", "<h1>Baseline</h1><p>Not yet: run <code>chaosctl baseline</code>.</p>", "/baseline")
     b = read_json(bp)
     q = b.get("quality") or {"pass": None, "checks": []}
     rows = "".join(f"<tr><td>{esc(j)}</td><td class='num'>{s['n']}</td><td class='num'>{pct(s['error_rate'])}</td>"
@@ -263,7 +283,7 @@ load: Locust {esc((b.get('load') or {}).get('state'))}, {esc((b.get('load') or {
 <th>p95 ms</th><th>p99 ms</th><th>probe req/s</th></tr>{rows}</table></div>
 <h2>Latency over time (10 s buckets; shaded = warm-up, excluded)</h2><div class="grid">{charts}</div>
 <h2>Container health (start → end)</h2><div class="card wrap"><table><tr><th>Container</th><th>Start</th><th>End</th></tr>{hrows}</table></div>"""
-    return page("Baseline", body)
+    return page("Baseline", body, "/baseline")
 
 
 
@@ -307,11 +327,15 @@ def live_fragment(cfg: Config, overlay: dict[str, str], journeys: dict[str, dict
 def fmea_html(cfg: Config) -> str:
     fp = cfg.artifacts_dir / "fmea.json"
     if not fp.exists():
-        return page("AI FMEA", "<h1>AI FMEA</h1><p>Not yet: run <code>chaosctl plan</code> or <code>chaosctl autopilot</code>.</p>")
+        return page("AI FMEA", "<h1>AI FMEA</h1><p>Not yet: run <code>chaosctl plan</code> or <code>chaosctl autopilot</code>.</p>", "/fmea")
     f = read_json(fp)
     m = f["meta"]
-    who = (f"AI · {esc(m['ai_meta'].get('model_served'))}" if m["method"] == "ai"
-           else f"rule-based fallback ({esc(m.get('ai_unavailable') or m.get('ai_rejected'))})")
+    if m["method"] == "ai":
+        who = f"AI · {esc(m['ai_meta'].get('model_served'))}"
+    elif m["method"] == "ai-cached":
+        who = f"AI (last validated answer, API unavailable: {esc(m['ai_meta'].get('cache_reason'))})"
+    else:
+        who = f"rule-based fallback ({esc(m.get('ai_unavailable') or m.get('ai_rejected') or 'reason not recorded')})"
     rows = []
     for r in f["rows"]:
         me = r.get("measured")
@@ -334,4 +358,4 @@ health-check blind spot (method: docs/SCORING.md). Occurrence can't be measured 
 <div class="card"><h3>What the AI chose to break first, and why</h3><ol class="small">{sel}</ol></div>
 <div class="card wrap"><table><tr><th>Component</th><th>Failure mode</th><th>Predicted effect / rationale</th><th>S</th><th>O</th><th>D</th>
 <th>RPN</th><th>Meas. S</th><th>Meas. D</th><th>Meas. RPN</th><th>Prediction</th></tr>{''.join(rows)}</table></div>"""
-    return page("AI FMEA", body)
+    return page("AI FMEA", body, "/fmea")

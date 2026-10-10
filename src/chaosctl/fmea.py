@@ -139,7 +139,7 @@ def build(cfg: Config, dep_map_path: Path, baseline_path: Path, use_ai: bool = T
         c["evidence"] = planner.evidence(cfg, dep_map, c, [])
     by_id = {c["candidate_id"]: c for c in cands}
 
-    meta: dict[str, Any] = {"method": "rule-based"}
+    meta: dict[str, Any] = {"method": "rule-based", "ai_unavailable": "AI not requested (--no-ai)"}
     data = None
     if use_ai:
         payload = {
@@ -153,12 +153,11 @@ def build(cfg: Config, dep_map_path: Path, baseline_path: Path, use_ai: bool = T
                                            "expected_journeys", "evidence")} for c in cands],
         }
         try:
-            got, ai_meta = ai.structured_call(SYSTEM, payload, SCHEMA, effort="high")
-            err = validate(got, by_id)
-            if err:
-                meta = {"method": "rule-based", "ai_rejected": err, "ai_meta": ai_meta}
-            else:
-                data, meta = got, {"method": "ai", "ai_meta": ai_meta, "summary": got["summary"]}
+            got, ai_meta = ai.validated_call("fmea", SYSTEM, payload, SCHEMA, lambda d: validate(d, by_id),
+                                             cfg.artifacts_dir / "ai-cache", effort="high")
+            data = got
+            meta = {"method": "ai-cached" if ai_meta.get("cached") else "ai", "ai_meta": ai_meta,
+                    "summary": got["summary"]}
         except ai.AIUnavailable as exc:
             meta = {"method": "rule-based", "ai_unavailable": str(exc)}
     if data is None:

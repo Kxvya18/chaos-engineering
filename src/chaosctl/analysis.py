@@ -186,6 +186,10 @@ def analyze_run(cfg: Config, run_dir: Path) -> dict[str, Any]:
         "impacted_journeys": impacted,
         "unexpected_impacted_journeys": unexpected,
         "time_to_restore_s": ttr,
+        "rollback": [{"fault_id": e["fault_id"], "verified": (e.get("result") or {}).get("verified"),
+                      "attempts": (e.get("result") or {}).get("attempts"),
+                      "checks": ((e.get("result") or {}).get("history") or [{}])[-1].get("checks")}
+                     for e in events if e["action"] == "rollback" and e.get("source") == "orchestrator"],
         "health_blind_spot": blind,
         "self_healed": self_healed,
         "target_timeline": timeline,

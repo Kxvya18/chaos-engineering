@@ -107,6 +107,17 @@ def small_multiple(title: str, pts: list[dict[str, Any]], key: str, marks: dict[
     return f'<div class="card"><h3>{esc(title)}</h3>{"".join(parts)}</div>'
 
 
+def _blind_html(a: dict[str, Any]) -> str:
+    bs = a.get("health_blind_spot")
+    if not bs or not bs.get("customer_impact_s"):
+        return ""
+    return (f"<div class='card'><b>Health-check blind spot:</b> customers were impacted for <b>{bs['customer_impact_s']:.0f} s</b>; "
+            f"for <b>{bs['silent_impact_s']:.0f} s</b> of that, every container still reported healthy. Customers first failed at "
+            f"+{esc(bs['customers_first_failed_at_s'])} s; "
+            f"{('the platform first showed a problem at +' + esc(bs['platform_first_not_green_at_s']) + ' s') if bs['platform_first_not_green_at_s'] is not None else 'the platform never showed a problem'}."
+            f"<br><span class='small muted'>{esc(bs['method'])}</span></div>")
+
+
 def render_run(cfg, run_dir: Path) -> str:
     a = read_json(run_dir / "analysis.json")
     exp = read_json(run_dir / "experiment.json")["experiment"]
@@ -196,13 +207,19 @@ def render_run(cfg, run_dir: Path) -> str:
 
     files = " · ".join(f'<a href="{n}">{n}</a>' for n in ("experiment.json", "metrics.jsonl", "events.jsonl", "analysis.json",
                                                          "evidence.json", "incident.json") if (run_dir / n).exists())
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Run {esc(a['run_id'])}</title><style>{CSS}</style></head><body><main>
-<p class="small"><a href="/">← all runs</a></p>
+    rb_rows = "".join(f"<tr><td>{esc(r['fault_id'])}</td><td>{_status(r['verified'], 'verified', 'NOT verified')}</td>"
+                      f"<td class='num'>{esc(r['attempts'])}</td><td class='small'>"
+                      + esc("; ".join(f"{c['check']}: expected {c['expected']}, got {c['actual']}" for c in (r.get('checks') or [])))
+                      + "</td></tr>" for r in a.get("rollback", []))
+    rollback_html = (f"<h2>Rollback verification</h2><div class='card wrap'><table><tr><th>Fault</th><th>Result</th><th>Attempts</th>"
+                     f"<th>State checks against the pre-injection snapshot</th></tr>{rb_rows}</table></div>") if rb_rows else ""
+    from .ui import page as ui_page
+    return ui_page(f"Run {a['run_id']}", f"""<p class="small"><a href="/runs">← all runs</a></p>
 <h1>{esc(exp.get('title') or a['experiment_id'])}</h1>
 <p class="muted">{esc(f0['fault_type'])} on <b>{esc(f0['target'])}</b> {esc(f0.get('params') or '')} for {esc(f0['duration_s'])} s · run <code>{esc(a['run_id'])}</code></p>
 <div class="card small"><b>Pre-registered hypothesis:</b> {esc(exp.get('hypothesis'))}<br><b>Why this experiment:</b> {esc(exp.get('why') or exp.get('reason'))}</div>
 <div class="kpis">{kpis}</div>
+{_blind_html(a)}
 <h2>AI incident analysis</h2>{ai_html}
 <h2>Blast radius: journeys and the services they pass through</h2>
 <div class="card wrap"><table><tr><th>Journey</th><th>Status</th><th>Service path (✕ = fault target)</th><th>Base err</th><th>Fault err</th><th>Base p95 ms</th><th>Fault p95 ms</th></tr>{''.join(rows)}</table></div>
@@ -211,17 +228,17 @@ def render_run(cfg, run_dir: Path) -> str:
 <h2>Target container timeline (state changes)</h2>
 <div class="card wrap"><table><tr><th>t (s from inject)</th><th>container</th><th>status</th><th>health</th><th>restarts</th><th>exit code</th></tr>{tl_rows}</table></div>
 {ev_html}
-<h2>Raw evidence files</h2><p class="small">{files}</p>
-</main></body></html>"""
+{rollback_html}
+<h2>Raw evidence files</h2><p class="small">{files}</p>""", CSS, "/runs")
 
 
 def render_compare(c: dict[str, Any]) -> str:
     keys = [k for k in c["before"] if k != "run_id"]
     rows = "".join(f"<tr><td>{esc(k.replace('_', ' '))}</td><td>{esc(c['before'][k])}</td><td>{esc(c['after'][k])}</td></tr>" for k in keys)
     good = c["verdict"] == "improved"
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Before / after</title><style>{CSS}</style></head><body><main><p class="small"><a href="/">← all runs</a></p>
+    from .ui import page as ui_page
+    return ui_page("Before / after", f"""<p class="small"><a href="/runs">← all runs</a></p>
 <h1>Before / after the fix — {esc(c['experiment_id'])}</h1>
 <div class="card">{_status(good, 'improved', c['verdict'])} · severity score change {esc(c['severity_delta'])}</div>
 <div class="card wrap"><table><tr><th>Metric</th><th><a href="/runs/{esc(c['before']['run_id'])}/">before</a></th>
-<th><a href="/runs/{esc(c['after']['run_id'])}/">after</a></th></tr>{rows}</table></div></main></body></html>"""
+<th><a href="/runs/{esc(c['after']['run_id'])}/">after</a></th></tr>{rows}</table></div>""", CSS, "/runs")

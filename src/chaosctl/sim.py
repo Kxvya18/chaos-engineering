@@ -50,6 +50,13 @@ class FakeDocker:
         cmd = a[0]
         if cmd in self.fail_on:
             return Result(1, "", f"simulated failure of {cmd}")
+        if cmd == "restart":
+            c = self.containers.get(a[-1])
+            if not c:
+                return Result(1, "", f"No such container: {a[-1]}")
+            c["status"] = "running"
+            self.netem.pop(a[-1], None)
+            return ok
         if cmd in ("stop", "kill", "start", "pause", "unpause"):
             name = a[-1]
             if name in self.helpers:

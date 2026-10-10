@@ -208,6 +208,63 @@ ADAPTERS: dict[str, tuple[Callable, Callable]] = {
 }
 
 
+# --- verified rollback: desired-state snapshot -> undo -> compare -> escalate ----------------
+def snapshot(ctx: Ctx, entry: dict[str, Any]) -> dict[str, Any]:
+    """The healthy state we must return to, captured BEFORE injection."""
+    if entry["fault_type"] == "traffic-spike":
+        try:
+            return {"locust_users": locust_status(ctx).get("user_count")}
+        except HttpError:
+            return {}
+    return {"status": ctx.docker.state(entry["target"])["status"], "nano_cpus": _nano_cpus(ctx, entry["target"])}
+
+
+def verify(ctx: Ctx, entry: dict[str, Any], desired: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compare actual state with the desired snapshot; every check is recorded as evidence."""
+    checks = []
+    if entry["fault_type"] == "traffic-spike":
+        if desired.get("locust_users") is not None:
+            try:
+                now_users = locust_status(ctx).get("user_count")
+            except HttpError as exc:
+                now_users = f"unreadable: {exc}"
+            checks.append({"check": "load back to baseline users", "expected": desired["locust_users"],
+                           "actual": now_users, "ok": now_users == desired["locust_users"]})
+        return checks
+    st = ctx.docker.state(entry["target"])
+    checks.append({"check": "container running", "expected": desired.get("status", "running"), "actual": st["status"],
+                   "ok": st["status"] == desired.get("status", "running")})
+    if entry["fault_type"] == "cpu-throttle":
+        want = desired.get("nano_cpus", 0)
+        got = _nano_cpus(ctx, entry["target"])
+        ok = got == want or (want == 0 and got >= int(ctx.docker.ncpu() * 1e9))  # 0 = unlimited == all host CPUs
+        checks.append({"check": "CPU limit restored", "expected": want, "actual": got, "ok": ok})
+    if entry["fault_type"] == "network-delay" and st["status"] == "running":
+        active = netem_active(ctx, entry["target"])
+        checks.append({"check": "no network fault (tc netem) left", "expected": False, "actual": active, "ok": not active})
+    return checks
+
+
+def rollback_verified(ctx: Ctx, entry: dict[str, Any], attempts: int = 3) -> dict[str, Any]:
+    """Undo, then prove it: re-check actual state against the pre-injection snapshot and escalate if needed
+    (attempt 2 repeats the adapter rollback; attempt 3 restarts the container). Deterministic by design:
+    a safety mechanism must behave identically every time."""
+    desired = entry.get("desired") or {}
+    history = []
+    for n in range(1, attempts + 1):
+        if n == attempts and entry["fault_type"] != "traffic-spike" and history:
+            ctx.docker.run(["restart", "-t", "5", entry["target"]], check=False)
+            res = {"ok": True, "action": "escalated: docker restart"}
+        else:
+            res = rollback(ctx, entry)
+        _wait(ctx, lambda: all(c["ok"] for c in verify(ctx, entry, desired)), 10, 1.0)
+        checks = verify(ctx, entry, desired)
+        history.append({"attempt": n, "result": res, "checks": checks})
+        if res.get("ok") and all(c["ok"] for c in checks):
+            return {"ok": True, "verified": True, "attempts": n, "history": history}
+    return {"ok": False, "verified": False, "attempts": attempts, "history": history}
+
+
 def inject(ctx: Ctx, entry: dict[str, Any]) -> dict[str, Any]:
     return ADAPTERS[entry["fault_type"]][0](ctx, entry)
 

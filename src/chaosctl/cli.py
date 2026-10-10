@@ -365,6 +365,14 @@ def cmd_scenarios(cfg: config.Config, args) -> int:
     return 0
 
 
+def cmd_export_site(cfg: config.Config, args) -> int:
+    from .export import export
+
+    files = export(cfg, Path(args.out))
+    print(f"static site: {len(files)} pages -> {args.out}/index.html (open it in a browser, or publish the folder)")
+    return 0
+
+
 def cmd_dashboard(cfg: config.Config, args) -> int:
     dashboard.serve(cfg, lambda: _ctx(cfg), args.host, args.port)
     return 0
@@ -461,6 +469,8 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("before")
     cp.add_argument("after")
     sub.add_parser("scenarios", help="list pre-registered scenarios")
+    ex2 = sub.add_parser("export-site", help="static snapshot of the dashboard with all evidence (for deployment)")
+    ex2.add_argument("--out", default="site")
     db = sub.add_parser("dashboard", help="web dashboard: live status, reports, kill switch")
     db.add_argument("--host", default="127.0.0.1")
     db.add_argument("--port", type=int, default=8090)
@@ -483,7 +493,7 @@ COMMANDS = {"doctor": cmd_doctor, "setup": cmd_setup, "map": cmd_map, "baseline"
             "run": cmd_run, "kill": cmd_kill, "reconcile": cmd_reconcile, "status": cmd_status,
             "analyze": cmd_analyze, "report": cmd_report, "selftest": cmd_selftest, "watchdog": cmd_watchdog,
             "explain": cmd_explain, "autopilot": cmd_autopilot, "compare": cmd_compare, "scenarios": cmd_scenarios,
-            "dashboard": cmd_dashboard}
+            "dashboard": cmd_dashboard, "export-site": cmd_export_site}
 
 
 def main(argv: list[str] | None = None) -> int:

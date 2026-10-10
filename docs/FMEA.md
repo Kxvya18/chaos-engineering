@@ -1,6 +1,6 @@
 # FMEA — AI-generated, chaos-validated
 
-Generated 2026-10-10T09:06:13+00:00 · method: rule-based · AI not used: None
+Generated 2026-10-10T09:21:25+00:00 · method: rule-based · AI not used: AI not requested (--no-ai)
 
 Scales (1 best … 10 worst): **severity** 1 = no customer-visible effect ... 5 = a low-value journey degraded ... 8 = cart or checkout fails ... 10 = checkout fails or customer data is lost; **occurrence** 1 = practically impossible in production ... 5 = plausible a few times per year ... 10 = expected often (e.g. tight memory limit, single instance, no restart); **detection** 1 = existing health checks/alerts certainly detect it before customers notice ... 10 = current monitoring cannot detect it (customers notice first)
 

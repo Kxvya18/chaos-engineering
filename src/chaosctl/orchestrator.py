@@ -173,6 +173,7 @@ class Orchestrator:
                 entry = {"fault_id": f"{run_id}-f{i}", "run_id": run_id, "fault_type": f["fault_type"],
                          "target": f["target"], "params": f.get("params") or {}, "duration_s": f["duration_s"],
                          "injected_at": t, "expires_at": t + f["duration_s"], "state": {}}
+                entry["desired"] = faults.snapshot(self.ctx, entry)  # the healthy state rollback must restore
                 self.registry.add(entry)  # registered BEFORE inject: a crash mid-inject is still rolled back
                 events.emit("inject_start", fault=entry, target_state=self.ctx.docker.state(f["target"])
                             if f["fault_type"] != "traffic-spike" else None)
@@ -196,8 +197,11 @@ class Orchestrator:
             outcome = {"status": "safety_error", "error": str(exc)}
         finally:
             for entry in reversed(injected):
-                res = faults.rollback(self.ctx, entry)
+                res = faults.rollback_verified(self.ctx, entry)
                 events.emit("rollback", fault_id=entry["fault_id"], result=res)
+                self.progress(f"rollback {'VERIFIED' if res.get('verified') else 'NOT VERIFIED'} after "
+                              f"{res.get('attempts')} attempt(s): " + "; ".join(
+                                  f"{c['check']}={'ok' if c['ok'] else 'FAIL'}" for c in res["history"][-1]["checks"]))
                 if res["ok"]:
                     self.registry.remove(entry["fault_id"])
             # anything the watchdog or a crash left behind for this run
