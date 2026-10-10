@@ -1,0 +1,13 @@
+# Vetted fixes the Remediation agent may apply AUTOMATICALLY (only with operator consent: `mission --apply-fixes`).
+# A fix is listed here only if it is a pure configuration change of an allow-listed sandbox service, it is reversible
+# (`scripts/demo.sh unfix` or the agent's own revert), and a re-run of the same experiment can prove it worked.
+# Every other finding gets rollback + recommendations only (see src/chaosctl/patterns.py).
+
+[[fix]]
+id = "cart-store-persistence"
+pattern = "DATA_PERSISTENCE"
+title = "Valkey append-only persistence on a named volume"
+file = "cart-store-crash.compose.yaml"
+service = "valkey-cart"
+applies_to = ["container-stop:valkey-cart"]
+proof = "re-run the same crash: sentinel carts survive and severity drops"

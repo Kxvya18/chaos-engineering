@@ -40,6 +40,12 @@ _Last updated: 2026-10-10 — verified rollback, AI self-correction loop, review
   sections; "Next" button on every page. `chaosctl export-site` writes a static snapshot (`site/`).
   Evidence: `pytest -q` 71 passed; pages checked visually on simulated data only (not committed).
 
+- Multi-agent mission (LangGraph, docs/AGENTS.md): 9 agents; every failure type in priority order; tripwire safety
+  test; human-in-the-loop fix approval (dashboard Approve/Decline, `chaosctl decide`); vetted fix + re-test proof.
+  Dashboard *Agent mission* page with Start button, live agent cards, approval card, results, activity log.
+  Deployment: `scripts/deploy.sh up` (shop + monitoring + chaos platform container). Evidence: `pytest -q` 74 passed
+  (simulation); dashboard screenshots from a simulated mission only. NOT RUN live yet.
+
 ## Current blocker
 - No live evidence yet: everything below the simulation must run on the team Mac (no Docker daemon in the Claude cloud session).
 - Owner: switch GitHub default branch to `main`; provide `ANTHROPIC_API_KEY` (spend-capped) for runtime AI on Day 2.

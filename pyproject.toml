@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "AI-assisted, safety-first chaos engineering for the OpenTelemetry Demo (Bosch hackathon)"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
-dependencies = ["anthropic>=1.12,<2"]
+dependencies = ["anthropic>=1.12,<2", "langgraph>=1.2.14,<2"]
 
 [project.optional-dependencies]
 dev = ["pytest==8.4.2", "ruff==0.16.8"]

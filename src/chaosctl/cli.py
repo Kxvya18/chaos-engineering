@@ -273,6 +273,61 @@ def cmd_autopilot(cfg: config.Config, args) -> int:
     return 0
 
 
+def cmd_mission(cfg: config.Config, args) -> int:
+    """Multi-agent mission (LangGraph): map -> baseline -> AI plan -> per test: safety, inject, rollback, analyse,
+    remediate -> report. Also started from the dashboard's Mission page."""
+    from . import agents
+
+    ctx = _ctx(cfg)
+
+    def make_map() -> dict[str, Any]:
+        return depmap.run(cfg, Http(10), cfg.artifacts_dir / "dependency-map.json", cfg.root / "docs" / "DEPENDENCIES.md")
+
+    def run_baseline() -> dict[str, Any]:
+        def load() -> dict[str, Any]:
+            try:
+                return faults.locust_status(ctx)
+            except HttpError as exc:
+                return {"error": str(exc)}
+        d = baseline.run(cfg, Journeys(cfg, ctx.http).all(), args.baseline_seconds, {"locust": load()},
+                         health=lambda: project_health(cfg, ctx), load=load, warmup_s=15)
+        return read_json(d / "summary.json")
+
+    def orchestrator(base: dict[str, Any], progress) -> Orchestrator:
+        return Orchestrator(cfg, ctx, Journeys(cfg, ctx.http).all(), base, progress=progress,
+                            use_ai=not args.no_ai, explain=True)
+
+    def approve(exps: list[dict[str, Any]]) -> bool:
+        if args.yes:
+            return True
+        ans = input(f"\nInject these {len(exps)} failure(s) one at a time, with all safety controls on? [y/N] ")
+        return ans.strip().lower() in ("y", "yes")
+
+    tools = agents.Tools(cfg=cfg, ctx=ctx, make_map=make_map, run_baseline=run_baseline, orchestrator=orchestrator,
+                         approve=approve)
+    opts = agents.Options(use_ai=not args.no_ai, apply_fixes=args.apply_fixes, approval=args.approval,
+                          max_tests=args.max, fault_seconds=args.fault_seconds, reuse=args.reuse,
+                          tripwire=not args.no_tripwire)
+    try:
+        final = agents.Mission(tools, opts).run()
+    except safety.SafetyError as exc:
+        print(f"REFUSED by safety policy: {exc}")
+        return 3
+    print(f"\nmission finished{': ' + final['stop_reason'] if final.get('stop_reason') else ''}. "
+          "Dashboard: http://127.0.0.1:8090/mission")
+    return 0 if not final.get("stop_reason") else 1
+
+
+def cmd_decide(cfg: config.Config, args) -> int:
+    from . import agents
+    ap = (agents.current_mission(cfg) or {}).get("approval") or {}
+    if ap.get("status") != "pending":
+        print("no fix is waiting for approval")
+        return 2
+    print(f"{ap['fix']['title']} -> {args.decision}")
+    return 0 if agents.decide(cfg, ap["id"], args.decision) else 2
+
+
 def cmd_run(cfg: config.Config, args) -> int:
     base_path = cfg.artifacts_dir / "baseline.json"
     if not base_path.exists():
@@ -444,6 +499,21 @@ def build_parser() -> argparse.ArgumentParser:
     b = sub.add_parser("baseline", help="measure steady state under normal load")
     b.add_argument("--duration", type=float, default=300)
     b.add_argument("--warmup", type=float, default=15, help="seconds probed but excluded from the numbers")
+    mi = sub.add_parser("mission", help="multi-agent mission (LangGraph): every failure type in priority order, "
+                                         "verified rollback, vetted fix + re-test")
+    mi.add_argument("--max", type=int, default=5, help="max tests (default 5 = one per failure type)")
+    mi.add_argument("--fault-seconds", type=int, default=None, help="shorter fault windows for a demo, e.g. 30")
+    mi.add_argument("--baseline-seconds", type=int, default=120)
+    mi.add_argument("--approval", choices=["ask", "auto", "never"], default="ask",
+                    help="ask = human approves each fix on the dashboard (or `chaosctl decide`); auto = pre-approved; "
+                         "never = recommend only")
+    mi.add_argument("--apply-fixes", action="store_true", help="same as --approval auto")
+    mi.add_argument("--no-tripwire", action="store_true", help="skip the automatic-stop safety test")
+    de = sub.add_parser("decide", help="answer the Remediation agent's pending fix approval")
+    de.add_argument("decision", choices=["apply", "skip"])
+    mi.add_argument("--reuse", action="store_true", help="reuse an accepted map + baseline")
+    mi.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    mi.add_argument("--no-ai", action="store_true")
     ap = sub.add_parser("autopilot", help="AI writes the FMEA, picks failures, engine injects safely, results measured")
     ap.add_argument("--max", type=int, default=2, help="max experiments to run (default 2)")
     ap.add_argument("--yes", action="store_true", help="do not ask for confirmation")
@@ -492,7 +562,8 @@ def build_parser() -> argparse.ArgumentParser:
 COMMANDS = {"doctor": cmd_doctor, "setup": cmd_setup, "map": cmd_map, "baseline": cmd_baseline, "plan": cmd_plan,
             "run": cmd_run, "kill": cmd_kill, "reconcile": cmd_reconcile, "status": cmd_status,
             "analyze": cmd_analyze, "report": cmd_report, "selftest": cmd_selftest, "watchdog": cmd_watchdog,
-            "explain": cmd_explain, "autopilot": cmd_autopilot, "compare": cmd_compare, "scenarios": cmd_scenarios,
+            "explain": cmd_explain, "autopilot": cmd_autopilot,
+            "mission": cmd_mission, "decide": cmd_decide, "compare": cmd_compare, "scenarios": cmd_scenarios,
             "dashboard": cmd_dashboard, "export-site": cmd_export_site}
 
 
